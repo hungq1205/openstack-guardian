@@ -1,0 +1,45 @@
+[project]
+name = "cmp-mcp"
+version = "0.1.0"
+description = "MCP servers for the CMP admin API and Elasticsearch logs -- a Claude Code MCP plugin, paired with the cmp-incident-response skill under .claude/skills/."
+requires-python = ">=3.12"
+dependencies = [
+    # Pinned below 2.0: that release changed the Server API this code is
+    # written against (list_tools()/call_tool() decorators,
+    # mcp.shared.memory.create_connected_server_and_client_session) in
+    # breaking ways. 1.28.1 is the exact version this code was built and
+    # tested against.
+    "mcp>=1.28.1,<2.0.0",
+    "httpx>=0.27.0",
+    "anyio>=4.0.0",
+    # admin_gui backend. fastapi is the only genuinely new dependency here --
+    # uvicorn/python-multipart/jsonschema/sse-starlette were already present
+    # as transitive deps of mcp itself, just promoted to direct since
+    # admin_gui imports them by name.
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "python-multipart>=0.0.9",
+    "jsonschema>=4.20.0",
+    "sse-starlette>=2.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=1.3.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+    "types-jsonschema>=4.20.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+
+[tool.ruff]
+# Matches the convention this code was originally written under (opensre's
+# ruff.toml) so extracting it here doesn't trigger a pile of unrelated
+# reflow diffs.
+line-length = 100

@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+data/
+admin_gui/backend/uploads/
+admin_gui/frontend/node_modules/
+admin_gui/frontend/dist/

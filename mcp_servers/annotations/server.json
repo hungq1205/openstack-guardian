@@ -1,0 +1,289 @@
+{
+  "rebuild_server": {
+    "usage_note": "Retry a failed server build. Requires project_id in addition to server_id -- an incomplete call is rejected by input validation, not silently accepted. Used both for direct retries after a transient core failure (connection drop, gateway timeout, boot-time device error) and after a resync confirms the underlying resource's real state now matches what the build expects. Returns 202 Accepted with no response body -- this only sends the rebuild request, it does not wait for or report completion. The CMP admin-v2 API has no server-status GET to poll; confirm the outcome via cmp-logs (search for a follow-up server_creator log line for the same execution_id) rather than treating the 202 as success. (The legacy v1 admin-api's equivalent, admin_api_servers_recreate, is pollable instead -- its server detail GET reports a power_state that goes 'pending' then 'running'; see that operation's annotation if v1 is in play.)",
+    "risk_level": "medium",
+    "tool_category": "action",
+    "preconditions": [
+      "if root cause was a state-drift (volume/port status mismatch), resync that resource first"
+    ],
+    "related_tools": [],
+    "pinned": true
+  },
+  "server_evacuate": {
+    "usage_note": "Move a single server off its current compute host onto another with capacity.",
+    "risk_level": "medium",
+    "tool_category": "action"
+  },
+  "evacuate_compute_node": {
+    "usage_note": "Move every server off a compute host at once. Broad blast radius -- affects every workload on the host, not just the one under investigation.",
+    "risk_level": "high",
+    "tool_category": "action",
+    "related_tools": ["list_compute_nodes"]
+  },
+  "delete_server": {
+    "usage_note": "Admin-delete a server. Standard deletion refuses a server in the pending state; when ALLOW_DELETE_PENDING_SERVER is enabled, a pending server can be force-deleted -- the delete retries against core up to FORCE_DELETE_CORE_RETRIES times, then the server is removed from the CMP database regardless of the result, and resources never created on core are cleaned up too.",
+    "risk_level": "high",
+    "tool_category": "action"
+  },
+  "schedule_delete_server": {
+    "usage_note": "Schedule a server for deletion rather than deleting it immediately.",
+    "risk_level": "high",
+    "tool_category": "action"
+  },
+  "list_compute_nodes": {
+    "usage_note": "Returns real per-host capacity (vcpus/ram/disk total and used, running_vms). Check this before deciding a capacity-exhaustion hypothesis (e.g. NoValidHost) is correct, and to find a host with headroom before an evacuate.",
+    "risk_level": null,
+    "tool_category": "read",
+    "pinned": true
+  },
+  "associate_floating_ip": {
+    "usage_note": "Claims the floating IP in the CMP database first, then schedules an async FloatingIPBindingSyncEvent that does the real binding on core afterward. This DB-first, core-second sequencing is the structural reason state drift exists -- if the sync event fails or races, CMP's record and core's real state can disagree from this point on.",
+    "risk_level": "medium",
+    "tool_category": "action"
+  },
+  "cancel_scan": {
+    "usage_note": "Stops an in-progress security scan (see create_scan/launch_scan) before it completes. No effect on the target hosts/IPs beyond ending the scan traffic.",
+    "risk_level": "low",
+    "tool_category": "action"
+  },
+  "change_password_server": {
+    "usage_note": "Resets the server's admin/root password. The previous password stops working immediately -- confirm the new credential will actually reach whoever needs it before calling this.",
+    "risk_level": "high",
+    "tool_category": "action"
+  },
+  "clone_server": {
+    "usage_note": "Creates 1-5 new servers (quantity, max 5) as copies of server_id. Each clone is a new billable resource; this does not modify or stop the source server.",
+    "risk_level": "medium",
+    "tool_category": "action"
+  },
+  "console_server": {
+    "usage_note": "Requests a console access URL/token for the server -- does not change server state despite being a POST. Safe to call freely for out-of-band access when a server is unresponsive to normal management calls.",
+    "risk_level": "low",
+    "tool_category": "read",
+    "read_only": true,
+    "destructive": false
+  },
+  "create_aggregate": {
+    "usage_note": "Creates a host-aggregate scheduling group (a named pool of compute hosts, e.g. for flavor/AZ pinning). Affects where future servers get scheduled; does not move or affect already-running servers.",
+    "risk_level": "medium",
+    "tool_category": "config"
+  },
+  "create_custom_image": {
+    "usage_note": "Creates a custom disk image from an existing volume (volume_id). Unlike the other custom-image operations, this one is implemented per the spec -- get/list/update/delete_custom_image are marked Not Implemented there.",
+    "risk_level": "medium",
+    "tool_category": "action"
+  },
+  "create_scan": {
+    "usage_note": "Defines a security scan against a list of target_ips using a scan template_id -- creates the scan record but does not start it (see launch_scan). Confirm target_ips are the intended, authorized hosts before creating.",
+    "risk_level": "medium",
+    "tool_category": "config",
+    "related_tools": ["launch_scan", "create_template"]
+  },
+  "create_server_action_schedule": {
+    "usage_note": "Schedules a future, unattended start/stop/delete action on server_id (once/daily/weekly/monthly). Treat as high-risk whenever action='delete' is being scheduled -- approving this creates a future deletion with no further confirmation at execution time. Always check the action value before approving.",
+    "risk_level": "high",
+    "tool_category": "config"
+  },
+  "create_template": {
+    "usage_note": "Defines a reusable scan configuration template referenced by create_scan's template_id. No effect on any running infrastructure by itself.",
+    "risk_level": "low",
+    "tool_category": "config"
+  },
+  "delete_aggregate": {
+    "usage_note": "Deletes a host-aggregate scheduling group definition. Does not affect servers already running on the hosts in that aggregate -- only affects future scheduling decisions that referenced it.",
+    "risk_level": "medium",
+    "tool_category": "config"
+  },
+  "delete_custom_image": {
+    "usage_note": "Per the CMP API spec, this operation is marked Not Implemented on the backend -- expect it to fail or return a stub response rather than actually deleting anything.",
+    "risk_level": "low",
+    "tool_category": "action"
+  },
+  "delete_scan": {
+    "usage_note": "Deletes a scan record (and its results). Does not affect the previously-scanned target hosts.",
+    "risk_level": "low",
+    "tool_category": "action"
+  },
+  "delete_server_action_schedule": {
+    "usage_note": "Removes a scheduled future server action before it runs. If the schedule's action was 'delete', this is what prevents that unattended deletion from happening -- confirm you're removing the intended schedule_id.",
+    "risk_level": "medium",
+    "tool_category": "config"
+  },
+  "delete_template": {
+    "usage_note": "Deletes a reusable scan template. Does not affect scans already created from it.",
+    "risk_level": "low",
+    "tool_category": "config"
+  },
+  "disable_compute_node": {
+    "usage_note": "Stops new servers from being scheduled onto this compute host. UNVERIFIED whether this affects servers already running on the host for this CMP deployment -- vanilla OpenStack semantics say no (future scheduling only). See mcp_servers/annotations/UNVERIFIED.md.",
+    "risk_level": "medium",
+    "tool_category": "admin",
+    "related_tools": ["enable_compute_node", "list_compute_nodes"]
+  },
+  "disassociate_floating_ip": {
+    "usage_note": "Releases the floating IP's binding to this server in the CMP database, then schedules an async unbind on core -- same DB-first, core-second sequencing as associate_floating_ip, with the same state-drift risk if the sync event fails or races.",
+    "risk_level": "medium",
+    "tool_category": "action"
+  },
+  "enable_compute_node": {
+    "usage_note": "Resumes scheduling new servers onto this compute host after it was disabled. Companion to disable_compute_node -- purely additive, doesn't stop or move anything.",
+    "risk_level": "low",
+    "tool_category": "admin",
+    "related_tools": ["disable_compute_node"]
+  },
+  "get_aggregate": {
+    "resource_spec": {
+      "uri_template": "cmp://host-aggregate/{aggregate_id}",
+      "name": "host-aggregate",
+      "description": "Detail for one host-aggregate scheduling group."
+    }
+  },
+  "get_compute_node": {
+    "resource_spec": {
+      "uri_template": "cmp://compute-node/{compute_id}",
+      "name": "compute-node",
+      "description": "Full detail for one compute host -- capacity, status, and running VM count."
+    }
+  },
+  "get_custom_image": {
+    "usage_note": "Per the CMP API spec, this operation is marked Not Implemented on the backend.",
+    "risk_level": null,
+    "tool_category": "read"
+  },
+  "get_scan": {
+    "usage_note": "Detail and status for one security scan.",
+    "risk_level": null,
+    "tool_category": "read"
+  },
+  "get_server_action_schedule": {
+    "usage_note": "Detail for one scheduled server action -- check the action field (start/stop/delete) before relying on delete_server_action_schedule or update_server_action_schedule decisions.",
+    "risk_level": null,
+    "tool_category": "read"
+  },
+  "get_server_compute_node": {
+    "resource_spec": {
+      "uri_template": "cmp://server-compute-node/{server_id}",
+      "name": "server-compute-node",
+      "description": "Which compute host a server is currently running on -- placement only."
+    }
+  },
+  "get_template": {
+    "usage_note": "Detail for one reusable scan template.",
+    "risk_level": null,
+    "tool_category": "read"
+  },
+  "launch_scan": {
+    "usage_note": "Starts actual scan traffic against the scan's target_ips. This generates real network traffic against those targets and may trigger security alerting on the receiving side if they're not expecting it.",
+    "risk_level": "medium",
+    "tool_category": "action"
+  },
+  "list_aggregates": {
+    "usage_note": "All host-aggregate scheduling groups.",
+    "risk_level": null,
+    "tool_category": "read"
+  },
+  "list_custom_images": {
+    "usage_note": "Per the CMP API spec, this operation is marked Not Implemented on the backend.",
+    "risk_level": null,
+    "tool_category": "read"
+  },
+  "list_scan": {
+    "usage_note": "All security scans.",
+    "risk_level": null,
+    "tool_category": "read"
+  },
+  "list_server_action_schedules": {
+    "usage_note": "All scheduled server actions -- check the action field on entries before assuming a schedule is benign, since it can be a pending delete.",
+    "risk_level": null,
+    "tool_category": "read"
+  },
+  "list_server_types": {
+    "usage_note": "Available server flavors/types for building or resizing a server.",
+    "risk_level": null,
+    "tool_category": "read"
+  },
+  "list_template": {
+    "usage_note": "All reusable scan templates.",
+    "risk_level": null,
+    "tool_category": "read"
+  },
+  "partial_update_custom_image": {
+    "usage_note": "Per the CMP API spec, this operation is marked Not Implemented on the backend -- expect it to fail or return a stub response.",
+    "risk_level": "low",
+    "tool_category": "action"
+  },
+  "reboot_server": {
+    "usage_note": "Reboots the server -- brief downtime while it restarts. Confirm this is the intended target before calling.",
+    "risk_level": "medium",
+    "tool_category": "action"
+  },
+  "rescue_server": {
+    "usage_note": "Boots the server into rescue mode (a temporary recovery image with the original disk attached) -- used to repair a server that won't boot normally. The server is unavailable for its normal workload while rescued; call unrescue_server to return it to normal operation.",
+    "risk_level": "medium",
+    "tool_category": "action",
+    "related_tools": ["unrescue_server"]
+  },
+  "resize_server": {
+    "usage_note": "Changes the server's flavor (CPU/RAM/disk), either to a predefined flavor (by id) or a custom one (family/vcpus/ram/...). UNVERIFIED whether this applies immediately with a reboot or some other mechanism -- there is no separate confirm_resize/revert_resize operation in this API, unlike vanilla OpenStack's two-phase resize. See mcp_servers/annotations/UNVERIFIED.md; treat as potentially disruptive until confirmed.",
+    "risk_level": "high",
+    "tool_category": "action"
+  },
+  "scan_send_mail": {
+    "usage_note": "Emails scan results to mail_recipients (and bcc_emails). No infrastructure impact -- confirm the recipient list is correct before sending, since scan results may include internal IP/network details.",
+    "risk_level": "low",
+    "tool_category": "action"
+  },
+  "set_down_compute_node": {
+    "usage_note": "Force-marks a compute host as down, typically as a precursor to evacuate_compute_node when a host has actually failed. UNVERIFIED blast radius on already-running VMs for this CMP deployment -- see mcp_servers/annotations/UNVERIFIED.md. Don't call this on a host that's actually healthy.",
+    "risk_level": "high",
+    "tool_category": "admin",
+    "related_tools": ["evacuate_compute_node", "unset_down_compute_node"]
+  },
+  "start_server": {
+    "usage_note": "Starts a stopped server.",
+    "risk_level": "low",
+    "tool_category": "action"
+  },
+  "stop_server": {
+    "usage_note": "Stops the server -- it becomes unavailable until start_server (or another start) is called. Confirm this is the intended target before calling; stopping the wrong server is a self-inflicted outage.",
+    "risk_level": "medium",
+    "tool_category": "action",
+    "related_tools": ["start_server"]
+  },
+  "unrescue_server": {
+    "usage_note": "Returns a rescued server (see rescue_server) to normal boot from its own disk.",
+    "risk_level": "medium",
+    "tool_category": "action"
+  },
+  "unset_down_compute_node": {
+    "usage_note": "Clears the forced-down state set by set_down_compute_node once the host is confirmed healthy again.",
+    "risk_level": "low",
+    "tool_category": "admin",
+    "related_tools": ["set_down_compute_node"]
+  },
+  "update_aggregate": {
+    "usage_note": "Updates a host-aggregate's own metadata (name, availability zone). Use update_aggregate_hosts to change which hosts belong to it.",
+    "risk_level": "medium",
+    "tool_category": "config"
+  },
+  "update_aggregate_hosts": {
+    "usage_note": "Changes which compute hosts belong to this aggregate. Affects future scheduling against this aggregate, not servers already running.",
+    "risk_level": "medium",
+    "tool_category": "config"
+  },
+  "update_aggregate_metadata": {
+    "usage_note": "Updates key/value metadata on a host-aggregate (used for scheduler filters like flavor pinning).",
+    "risk_level": "low",
+    "tool_category": "config"
+  },
+  "update_server_action_schedule": {
+    "usage_note": "Modifies an existing scheduled server action. Same caution as create_server_action_schedule -- check the resulting action value (existing or newly set) before approving, since this can turn an existing schedule into a future unattended delete.",
+    "risk_level": "high",
+    "tool_category": "config"
+  },
+  "update_server_bandwidth": {
+    "usage_note": "Changes the server's network bandwidth allocation. Not destructive, but can affect application performance if set too low.",
+    "risk_level": "medium",
+    "tool_category": "config"
+  }
+}

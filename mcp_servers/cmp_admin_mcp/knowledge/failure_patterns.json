@@ -1,0 +1,86 @@
+[
+  {
+    "id": "volume_status_drift",
+    "signature_pattern": "ERROR celery.server_creator server_creator_execution {execution_id} Error generating server {server_id}: Invalid volume: Invalid input received: Invalid volume: Volume {volume_id} status must be available or downloading to reserve, but the current status is in-use.",
+    "cause": "Volume exists in core/cinder but is in a state (e.g. in-use) that prevents attachment/reservation.",
+    "instruction": "Check status của volume ở core: \n- nếu status của volume dưới core đang không phải in-use thì -> gọi CMP API GET volume (/admin-api/volumes/{id}/) để sync lại trạng thái -> sau khi trạng thái volume đã map giữa core và CMP thì gọi CMP API recreate server (/admin-api/servers/{id}/recreate/). \n- nếu status volume dưới core đúng là đang in-use thì notify cho admin xử lý",
+    "source_reference": "server create error CSV, row 1 (Những Lỗi bắt được ở IAAS)"
+  },
+  {
+    "id": "connection_aborted_transient",
+    "signature_pattern": "ERROR celery.server_creator server_creator_execution {execution_id} Error generating server {server_id}: Unable to establish connection to {core_api_url}: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response')) @timestamp:{observed_at}.",
+    "cause": "Transient network connection failure to core API endpoint.",
+    "instruction": "Gọi rebuild_server để retry tạo lại server. API trả về 202 Accepted ngay lập tức, không có nội dung phản hồi -- lệnh gọi chỉ gửi yêu cầu, không xác nhận việc rebuild đã thành công. CMP admin-v2 không có endpoint GET trạng thái server để kiểm tra; xác nhận kết quả qua cmp-logs (tìm log server_creator tiếp theo cùng execution_id).",
+    "source_reference": "server create error CSV, row 2"
+  },
+  {
+    "id": "gateway_timeout_transient",
+    "signature_pattern": "ERROR celery.server_creator server_creator_execution {execution_id} Error generating server {server_id}: Gateway Timeout (HTTP 504) @timestamp:{observed_at}.",
+    "cause": "Transient gateway/API timeout during server creation.",
+    "instruction": "Gọi rebuild_server để retry tạo lại server. API trả về 202 Accepted ngay lập tức, không có nội dung phản hồi -- lệnh gọi chỉ gửi yêu cầu, không xác nhận việc rebuild đã thành công. CMP admin-v2 không có endpoint GET trạng thái server để kiểm tra; xác nhận kết quả qua cmp-logs (tìm log server_creator tiếp theo cùng execution_id).",
+    "source_reference": "server create error CSV, row 3 (no hành động xử lý recorded in the source)"
+  },
+  {
+    "id": "block_device_not_bootable_transient",
+    "signature_pattern": "ERROR celery.server_creator server_creator_execution {execution_id} Error generating server {server_id}: Block Device {device_id} is not bootable. (HTTP 400) (Request-ID: {request_id}) @timestamp:{observed_at}.",
+    "cause": "Block device is not marked as bootable - may be transient state or misconfigured.",
+    "instruction": "Gọi rebuild_server để retry tạo lại server. API trả về 202 Accepted ngay lập tức, không có nội dung phản hồi -- lệnh gọi chỉ gửi yêu cầu, không xác nhận việc rebuild đã thành công. CMP admin-v2 không có endpoint GET trạng thái server để kiểm tra; xác nhận kết quả qua cmp-logs (tìm log server_creator tiếp theo cùng execution_id).",
+    "source_reference": "server create error CSV, row 4 (no hành động xử lý recorded in the source)"
+  },
+  {
+    "id": "image_not_active",
+    "signature_pattern": "ERROR celery.server_creator server_creator_execution {execution_id} Error generating server {server_id}: Invalid input received: Image {image_id} is not active. (HTTP 400) (Request-ID: {request_id}).",
+    "cause": "Image is not in active state - may be pending activation or marked inactive.",
+    "instruction": "Notify admin để xử lý. Yêu cầu kiểm tra trạng thái image trong core và kích hoạt nếu cần.",
+    "source_reference": "server create error CSV, row 5"
+  },
+  {
+    "id": "invalid_image_identifier",
+    "signature_pattern": "ERROR celery.server_creator server_creator_execution {execution_id} Error generating server {server_id}: Invalid image identifier or unable to access requested image. (HTTP 400) (Request-ID: {request_id}) @timestamp:{observed_at}.",
+    "cause": "Image identifier is invalid or image is not accessible.",
+    "instruction": "Notify admin để xử lý. Yêu cầu kiểm tra image ID và quyền truy cập.",
+    "source_reference": "server create error CSV, row 6 (no hành động xử lý recorded in the source)"
+  },
+  {
+    "id": "port_status_drift",
+    "signature_pattern": "ERROR celery.server_creator server_creator_execution {execution_id} Error generating server {server_id}: Port {port_id} is still in use. (HTTP 409) (Request-ID: {request_id}) @timestamp:{observed_at}.",
+    "cause": "Port/network interface exists in core but is still in-use state, preventing attachment to new server.",
+    "instruction": "Check status của port ở core: \n- nếu status của port dưới core đang không phải in-use thì -> gọi CMP API GET port (/admin-v2/network/elastic-ips/{elastic_ip_id}/) hoặc (/admin-v2/network/private-ips/{private_ip_id}/) để sync lại trạng thái -> sau khi trạng thái port đã map giữa core và CMP thì gọi CMP API recreate server (/admin-api/servers/{id}/recreate/). \n- nếu status port dưới core đúng là đang in-use thì notify cho admin xử lý.",
+    "source_reference": "server create error CSV, row 7"
+  },
+  {
+    "id": "no_available_ip",
+    "signature_pattern": "ERROR celery.server_creator server_creator_execution {execution_id} Error generating server {server_id}: No available IP addresses on public network @timestamp:{observed_at}.",
+    "cause": "Public network has exhausted available IP addresses.",
+    "instruction": "Notify admin để xử lý. Yêu cầu kiểm tra và giải phóng IP addresses hoặc mở rộng dải IP công khai.",
+    "source_reference": "server create error CSV, row 8"
+  },
+  {
+    "id": "invalid_security_group_none",
+    "signature_pattern": "ERROR celery.server_creator server_creator_execution {execution_id} Error generating server {server_id}: Invalid input for security_groups. Reason: 'None' is not a valid UUID. @timestamp:{observed_at}.",
+    "cause": "Security group parameter contains None instead of a valid UUID.",
+    "instruction": "Notify admin để xử lý. Yêu cầu kiểm tra cấu hình security group và đảm bảo các ID hợp lệ.",
+    "source_reference": "server create error CSV, row 9"
+  },
+  {
+    "id": "compute_capacity_exhaustion",
+    "signature_pattern": "ERROR nova.conductor.manager [None ...] Failed to schedule instances: nova.exception_Remote.NoValidHost_Remote: No valid host was found. There are not enough hosts available.",
+    "cause": "All compute hosts are at capacity - no available resources to schedule new instances.",
+    "instruction": "Xây dựng chức năng tính toán tự động dòn dịch server (live-migrate các VM nhỏ ở compute này về các compute khác để đủ chỗ tạo VM mới)",
+    "source_reference": "server create error CSV, row 10 (Những Lỗi bắt được ở core openstack) -- the only guided-mode case found in the source"
+  },
+  {
+    "id": "max_retries_exceeded_all_hosts",
+    "signature_pattern": "Failed to compute_task_build_instances: Exceeded maximum number of retries. Exhausted all hosts available for retrying build failures for instance {instance_id}.: nova.exception.MaxRetriesExceeded: Exceeded maximum number of retries.",
+    "cause": "Server creation failed on all available compute hosts after exhausting retry attempts.",
+    "instruction": "Notify admin để xử lý. Yêu cầu kiểm tra tình trạng toàn bộ compute cluster và các lỗi cơ bản.",
+    "source_reference": "server create error CSV, row 11"
+  },
+  {
+    "id": "volume_not_found",
+    "signature_pattern": "cinderclient.exceptions.NotFound: Volume {volume_id} could not be found. (HTTP 404) (Request-ID: {request_id})",
+    "cause": "Volume không còn tồn tại trong core/cinder ở bất kỳ trạng thái nào -- khác với volume_status_drift (volume vẫn tồn tại nhưng sai trạng thái), ở đây volume_id được tham chiếu đã biến mất hoàn toàn khỏi core. Khả năng cao do volume đã bị xoá ngoài luồng CMP trong khi phía gọi vẫn giữ tham chiếu cũ (stale) tới volume_id này.",
+    "instruction": "Notify admin để xử lý.",
+    "source_reference": "mock/elasticsearch/mock-logs-23.csv, iaas-api gateway mock logs (host iaas-2, request-id df3daa616eb14781866673d4c67d062e, 2026-08-23 23:26:37 burst)"
+  }
+]

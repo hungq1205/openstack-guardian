@@ -1,0 +1,174 @@
+{
+  "admin_api_servers_list": {
+    "usage_note": "List servers under the legacy /admin-api surface, with the same rich filter set (owner, project, status, power_state, hostname, elastic_ip, private_ip, vpc, zone, region, ...) the v1 admin UI itself uses. Kept alongside the current admin-v2 catalog for environments still partly on the older API; prefer the admin-v2 equivalents when both cover the same ground.",
+    "tool_category": "read",
+    "pinned": true
+  },
+  "admin_api_servers_retrieve": {
+    "usage_note": "Full detail for one server by id -- the v1 API's actual 'server detail' GET, something admin-v2 doesn't have an equivalent for (see cmp_admin_mcp/resources.py's note that no such GET exists there). Use this first when investigating a specific server under v1. Also the way to confirm a rebuild actually finished: right after admin_api_servers_recreate, power_state here reads 'pending'; poll this on an interval until it flips to 'running' (power_state stuck at 'pending' points to a stuck/failed rebuild) rather than assuming the recreate call's 202 response means it's done. Don't confuse this with the separate `status` field on the same response (active/building/paused/...) -- power_state is the one that actually carries pending/running.",
+    "resource_spec": {
+      "uri_template": "cmp://server-v1/{server_id}",
+      "name": "server-v1",
+      "description": "Full server detail under the legacy v1 admin-api.",
+      "id_param": "id"
+    }
+  },
+  "admin_api_servers_partial_update": {
+    "usage_note": "Partial (PATCH) update of a server's editable fields.",
+    "risk_level": "medium",
+    "tool_category": "config",
+    "related_tools": ["admin_api_servers_retrieve"]
+  },
+  "admin_api_servers_destroy": {
+    "usage_note": "Hard-delete a server (DELETE). Irreversible -- confirm the target id via admin_api_servers_retrieve first.",
+    "risk_level": "high",
+    "tool_category": "action",
+    "destructive": true,
+    "related_tools": ["admin_api_servers_retrieve"]
+  },
+  "admin_api_servers_action_log": {
+    "usage_note": "Action/audit log entries for a server -- what admin operations have been performed on it and when. Check here before retrying an action to see if it already ran.",
+    "tool_category": "read"
+  },
+  "admin_api_servers_attach_eip": {
+    "usage_note": "Attach an existing elastic IP to a server.",
+    "risk_level": "medium",
+    "tool_category": "action"
+  },
+  "admin_api_servers_attach_privateip": {
+    "usage_note": "Attach an existing private IP/port to a server.",
+    "risk_level": "medium",
+    "tool_category": "action"
+  },
+  "admin_api_servers_attach_subnet": {
+    "usage_note": "Attach a subnet/network interface to a server.",
+    "risk_level": "medium",
+    "tool_category": "action"
+  },
+  "admin_api_servers_attach_volume": {
+    "usage_note": "Attach an existing volume to a server.",
+    "risk_level": "medium",
+    "tool_category": "action"
+  },
+  "admin_api_servers_change_password": {
+    "usage_note": "Reset a server's admin/root password. Customer-visible and immediate -- confirm the target id carefully.",
+    "risk_level": "high",
+    "tool_category": "action"
+  },
+  "admin_api_servers_console": {
+    "usage_note": "Open a remote console session/URL for a server -- diagnostic access, not a mutation.",
+    "risk_level": "low",
+    "tool_category": "read"
+  },
+  "admin_api_servers_console_log": {
+    "usage_note": "Fetch the server's console log -- often the fastest way to see a boot-time failure directly from the guest OS/hypervisor, complementing celery/server_creator application logs.",
+    "risk_level": "low",
+    "tool_category": "read"
+  },
+  "admin_api_servers_delete": {
+    "usage_note": "Soft/scheduled delete via POST, distinct from the hard admin_api_servers_destroy (DELETE) -- check which behavior this environment's v1 API actually implements before relying on either as 'the' delete path.",
+    "risk_level": "high",
+    "tool_category": "action",
+    "destructive": true,
+    "related_tools": ["admin_api_servers_destroy", "admin_api_servers_retrieve"]
+  },
+  "admin_api_servers_detach_eip": {
+    "usage_note": "Detach an elastic IP from a server.",
+    "risk_level": "medium",
+    "tool_category": "action"
+  },
+  "admin_api_servers_detach_private_ip": {
+    "usage_note": "Detach a private IP/port from a server.",
+    "risk_level": "medium",
+    "tool_category": "action"
+  },
+  "admin_api_servers_detach_volume": {
+    "usage_note": "Detach a volume from a server.",
+    "risk_level": "medium",
+    "tool_category": "action"
+  },
+  "admin_api_servers_evacuate": {
+    "usage_note": "Force-evacuate a server off its current compute host (e.g. the host is down). Disruptive -- the server restarts on a different host.",
+    "risk_level": "high",
+    "tool_category": "action"
+  },
+  "admin_api_servers_live_migrate": {
+    "usage_note": "Live-migrate a running server to another compute host with no guest downtime, when the target host has capacity.",
+    "risk_level": "high",
+    "tool_category": "action"
+  },
+  "admin_api_servers_migrate": {
+    "usage_note": "Cold-migrate a server to another compute host (guest is stopped during the move) -- use live_migrate instead when avoiding downtime matters.",
+    "risk_level": "high",
+    "tool_category": "action",
+    "related_tools": ["admin_api_servers_live_migrate"]
+  },
+  "admin_api_servers_reboot": {
+    "usage_note": "Reboot a server (soft or hard, depending on the request body).",
+    "risk_level": "medium",
+    "tool_category": "action"
+  },
+  "admin_api_servers_recreate": {
+    "usage_note": "The actual, real recreate-server endpoint on the legacy v1 admin-api (/admin-api/servers/{id}/recreate/) -- unlike admin-v2, which has no such operation (see legacy_operations.py and the rebuild_server annotation). Retry a failed server build under v1. Confirm root cause first; if it was a state-drift issue, resync that resource before retrying. Returns 202 Accepted with no completion signal -- this only starts the recreate. The server's power_state goes to 'pending' while it runs; poll admin_api_servers_retrieve every so often and watch that field (not the separate `status` field) flip to 'running' before treating the retry as successful.",
+    "risk_level": "high",
+    "tool_category": "action",
+    "preconditions": [
+      "if root cause was a state-drift (volume/port status mismatch), resync that resource first"
+    ],
+    "related_tools": ["admin_api_servers_action_log", "admin_api_servers_retrieve"],
+    "pinned": true
+  },
+  "admin_api_servers_rescue": {
+    "usage_note": "Boot a server into rescue mode (a temporary recovery image with the original disk attached) -- for repairing an unbootable guest.",
+    "risk_level": "medium",
+    "tool_category": "action",
+    "related_tools": ["admin_api_servers_unrescue"]
+  },
+  "admin_api_servers_reset_state": {
+    "usage_note": "Force a server's status field back to a known value in the database, without touching the actual hypervisor/guest state. A last-resort admin override for a stuck status, not a fix for whatever caused the stuck state -- confirm the real state first (console-log/action-log) before overriding what's recorded.",
+    "risk_level": "medium",
+    "tool_category": "admin",
+    "related_tools": ["admin_api_servers_action_log", "admin_api_servers_console_log"]
+  },
+  "admin_api_servers_resize": {
+    "usage_note": "Resize a server to a different flavor/type. Disruptive -- typically involves a reboot and a resize-confirm step depending on the backend.",
+    "risk_level": "high",
+    "tool_category": "action"
+  },
+  "admin_api_servers_start": {
+    "usage_note": "Start a stopped server.",
+    "risk_level": "low",
+    "tool_category": "action"
+  },
+  "admin_api_servers_stop": {
+    "usage_note": "Stop a running server.",
+    "risk_level": "medium",
+    "tool_category": "action"
+  },
+  "admin_api_servers_unrescue": {
+    "usage_note": "Exit rescue mode and boot the server normally again.",
+    "risk_level": "medium",
+    "tool_category": "action",
+    "related_tools": ["admin_api_servers_rescue"]
+  },
+  "admin_api_servers_update_bandwidth": {
+    "usage_note": "Change a server's network bandwidth allocation/limit.",
+    "risk_level": "medium",
+    "tool_category": "config"
+  },
+  "admin_api_servers_update_security_group": {
+    "usage_note": "Change which security group(s) a server belongs to.",
+    "risk_level": "medium",
+    "tool_category": "config"
+  },
+  "admin_api_servers_list_server_status": {
+    "usage_note": "Lighter-weight status-only listing across servers, with the same filter set as admin_api_servers_list -- use when you only need status/power_state, not full server records.",
+    "risk_level": "low",
+    "tool_category": "read"
+  },
+  "admin_api_servers_update_server_status": {
+    "usage_note": "Bulk status override with no path id -- affects servers matched by the request body, not a single server. Broad blast radius; confirm the request body's scope carefully before calling.",
+    "risk_level": "high",
+    "tool_category": "admin"
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "get_volume_qos": {
+    "usage_note": "This spec has no plain volume status/detail endpoint at all -- only QoS and backup-policy management. If a volume-status-drift hypothesis needs a real GET on the volume resource itself, that's not this tool -- see get_volume_legacy (opt-in, CMP_ADMIN_V2_ENABLE_LEGACY_VOLUME_GET) for the CSV's original endpoint, unverified against the current API.",
+    "tool_category": "read"
+  },
+  "get_volume_legacy": {
+    "usage_note": "Unverified stopgap from the CSV troubleshooting compilation, not a confirmed-current endpoint -- unlike rebuild_server, no modern replacement has been found for this at all. Confirm it still resolves on a given CMP deployment before trusting its response for a volume-status-drift hypothesis.",
+    "risk_level": "low",
+    "tool_category": "read",
+    "pinned": true
+  },
+  "create_backup_policy": {
+    "usage_note": "Defines a backup retention/scheduling policy. Configuration only -- doesn't trigger an immediate backup or delete existing backups by itself.",
+    "risk_level": "medium",
+    "tool_category": "config"
+  },
+  "create_volume_qos": {
+    "usage_note": "Defines a volume QoS (IOPS/throughput limit) profile. Applying it to a live volume is a separate step (see update_volume_qos_for_volume) -- creating the profile alone doesn't affect any volume.",
+    "risk_level": "medium",
+    "tool_category": "config"
+  },
+  "delete_backup_policy": {
+    "usage_note": "Deletes the policy definition. UNVERIFIED whether existing backups made under this policy are affected -- confirm before deleting a policy that's actively in use. See mcp_servers/annotations/UNVERIFIED.md.",
+    "risk_level": "medium",
+    "tool_category": "config"
+  },
+  "delete_volume_qos": {
+    "usage_note": "Deletes a QoS profile. UNVERIFIED whether volumes currently using it revert to unlimited or a default profile. See mcp_servers/annotations/UNVERIFIED.md.",
+    "risk_level": "medium",
+    "tool_category": "config"
+  },
+  "get_backup_policy": {
+    "usage_note": "Detail for one backup policy.",
+    "risk_level": null,
+    "tool_category": "read"
+  },
+  "list_backup_policies": {
+    "usage_note": "All backup policies.",
+    "risk_level": null,
+    "tool_category": "read"
+  },
+  "list_volume_qos": {
+    "usage_note": "All volume QoS profiles.",
+    "risk_level": null,
+    "tool_category": "read"
+  },
+  "update_backup_policy": {
+    "usage_note": "Changes retention/scheduling for a backup policy. Affects future backup behavior for volumes under this policy, not backups already taken.",
+    "risk_level": "medium",
+    "tool_category": "config"
+  },
+  "update_volume_qos": {
+    "usage_note": "Changes IOPS/throughput limits on an existing QoS profile -- affects every volume currently using it, live.",
+    "risk_level": "medium",
+    "tool_category": "config"
+  },
+  "update_volume_qos_for_volume": {
+    "usage_note": "Applies a QoS profile to a specific volume -- changes its live performance limits immediately.",
+    "risk_level": "medium",
+    "tool_category": "action"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "cmp-admin": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "mcp_servers.cmp_admin_mcp.main"]
+    },
+    "cmp-logs": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "mcp_servers.cmp_logs_mcp.main"]
+    },
+    "cmp-notify": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "mcp_servers.cmp_notify_mcp.main"]
+    }
+  }
+}
