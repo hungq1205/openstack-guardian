@@ -21,6 +21,7 @@ from mcp import McpError
 from mcp.server.lowlevel import Server
 from mcp.shared.memory import create_connected_server_and_client_session
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from mcp_servers.cmp_admin_mcp.main import (
     all_operations_with_pinned_state,
@@ -181,7 +182,7 @@ async def list_tools(server_id: str) -> list[ToolSummary]:
     """The discovery-filtered listing -- exactly what an agent sees by
     default. For cmp-admin's *full* operation catalog, see
     `/servers/cmp-admin/tools/all` below."""
-    server = _build_server(server_id)
+    server = await run_in_threadpool(_build_server, server_id)
     async with create_connected_server_and_client_session(server) as session:
         result = await session.list_tools()
     return [
@@ -197,7 +198,8 @@ async def list_tools(server_id: str) -> list[ToolSummary]:
 
 @router.get("/cmp-admin/tools/all", response_model=list[OperationSummary])
 async def list_all_admin_operations() -> list[OperationSummary]:
-    return [OperationSummary(**entry) for entry in _catalog_call(all_operations_with_pinned_state)]
+    entries = await run_in_threadpool(_catalog_call, all_operations_with_pinned_state)
+    return [OperationSummary(**entry) for entry in entries]
 
 
 @router.post("/cmp-admin/tools/{operation_id}/pin")
@@ -208,7 +210,7 @@ async def set_pin(operation_id: str, request: PinRequest) -> dict[str, bool]:
 
 @router.get("/cmp-admin/tools/{operation_id}", response_model=OperationDetail)
 async def get_operation_detail(operation_id: str) -> dict[str, Any]:
-    detail = _catalog_call(lambda: operation_detail(operation_id))
+    detail = await run_in_threadpool(_catalog_call, lambda: operation_detail(operation_id))
     if detail is None:
         raise HTTPException(status_code=404, detail=f"unknown operation: {operation_id}")
     return detail
@@ -216,7 +218,7 @@ async def get_operation_detail(operation_id: str) -> dict[str, Any]:
 
 @router.put("/cmp-admin/tools/{operation_id}", response_model=OperationDetail)
 async def update_operation_detail(operation_id: str, update: OperationDetailUpdate) -> dict[str, Any]:
-    existing = _catalog_call(lambda: operation_detail(operation_id))
+    existing = await run_in_threadpool(_catalog_call, lambda: operation_detail(operation_id))
     if existing is None:
         raise HTTPException(status_code=404, detail=f"unknown operation: {operation_id}")
     fields = update.model_dump(exclude_unset=True)
@@ -224,14 +226,14 @@ async def update_operation_detail(operation_id: str, update: OperationDetailUpda
         fields["tool_category"] = fields.pop("category")
     if fields:
         set_annotation_override(operation_id, fields)
-    detail = _catalog_call(lambda: operation_detail(operation_id))
+    detail = await run_in_threadpool(_catalog_call, lambda: operation_detail(operation_id))
     assert detail is not None
     return detail
 
 
 @router.get("/{server_id}/resources", response_model=list[ResourceTemplateSummary])
 async def list_resource_templates(server_id: str) -> list[ResourceTemplateSummary]:
-    server = _build_server(server_id)
+    server = await run_in_threadpool(_build_server, server_id)
     async with create_connected_server_and_client_session(server) as session:
         try:
             result = await session.list_resource_templates()
@@ -249,7 +251,7 @@ async def list_resource_templates(server_id: str) -> list[ResourceTemplateSummar
 
 @router.get("/{server_id}/prompts", response_model=list[PromptSummary])
 async def list_prompts(server_id: str) -> list[PromptSummary]:
-    server = _build_server(server_id)
+    server = await run_in_threadpool(_build_server, server_id)
     async with create_connected_server_and_client_session(server) as session:
         try:
             result = await session.list_prompts()

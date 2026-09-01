@@ -107,15 +107,31 @@ export interface TicketOut extends Record<string, unknown> {
   id: number
   session_id: string
   title: string
+  initial_prompt: string | null
   resource_id: string | null
   state: string
   created_at: string
   closed_at: string | null
+  deleted_at: string | null
   event_count: number
   comment_count: number
   latest_event_name: string | null
   latest_event_status: string | null
   latest_event_ts: string | null
+  latest_event_action: string | null
+}
+
+export interface TicketUpdate {
+  title?: string
+}
+
+export interface TicketTransitionOut extends Record<string, unknown> {
+  id: number
+  ticket_id: number
+  ticket_title: string
+  from_state: string | null
+  to_state: string
+  ts: string
 }
 
 export interface ConnectionFields {
@@ -203,6 +219,7 @@ export const api = {
     kind?: string
     status?: string
     ticket_id?: string
+    ticket_state?: string
     since?: string
     until?: string
     limit?: number
@@ -225,8 +242,15 @@ export const api = {
   addComment: (eventId: number, text: string) =>
     request<CommentOut>(`/api/events/${eventId}/comments`, { method: 'POST', body: json({ text }) }),
 
-  listTickets: () => request<TicketOut[]>('/api/tickets'),
+  listTickets: (opts?: { trashed?: boolean }) =>
+    request<TicketOut[]>(`/api/tickets${opts?.trashed ? '?trashed=true' : ''}`),
   getTicket: (id: number) => request<TicketOut>(`/api/tickets/${id}`),
+  updateTicket: (id: number, update: TicketUpdate) =>
+    request<TicketOut>(`/api/tickets/${id}`, { method: 'PATCH', body: json(update) }),
+  trashTicket: (id: number) => request<TicketOut>(`/api/tickets/${id}/trash`, { method: 'POST' }),
+  restoreTicket: (id: number) => request<TicketOut>(`/api/tickets/${id}/restore`, { method: 'POST' }),
+  listTicketTransitions: (limit?: number) =>
+    request<TicketTransitionOut[]>(`/api/tickets/transitions${limit ? `?limit=${limit}` : ''}`),
   deleteTicket: (id: number) =>
     request<{ detached_events: number }>(`/api/tickets/${id}`, { method: 'DELETE' }),
 

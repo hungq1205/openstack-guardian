@@ -113,6 +113,9 @@ async def list_events(
     ticket_id: str | None = Query(
         default=None, description="Only events for this ticket id, or the literal 'unassigned' for ticket_id IS NULL"
     ),
+    ticket_state: str | None = Query(
+        default=None, description="Only events for tickets currently in this state (e.g. the Kanban board's own columns)"
+    ),
     since: str | None = Query(default=None, description="Only events at/after this ISO timestamp"),
     until: str | None = Query(default=None, description="Only events at/before this ISO timestamp"),
     since_id: int | None = Query(default=None, description="Only events with id greater than this"),
@@ -137,6 +140,9 @@ async def list_events(
                     raise HTTPException(status_code=400, detail=f"invalid ticket_id: {ticket_id!r}") from exc
                 clauses.append("ticket_id = ?")
                 params.append(parsed_ticket_id)
+        if ticket_state is not None:
+            clauses.append("ticket_id IN (SELECT id FROM tickets WHERE state = ?)")
+            params.append(ticket_state)
         if since is not None:
             clauses.append("ts >= ?")
             params.append(_normalize_ts_bound(since, field="since"))

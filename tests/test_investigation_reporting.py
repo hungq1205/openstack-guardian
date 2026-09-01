@@ -16,6 +16,7 @@ from mcp.shared.memory import create_connected_server_and_client_session
 from mcp_servers.cmp_admin_mcp.investigation_reporting import (
     build_submit_investigation_plan_tool,
     build_submit_investigation_report_tool,
+    run_start_investigate,
 )
 from mcp_servers.openapi_bridge import SpecSource, build_multi_spec_server
 from mcp_servers.shared import telemetry
@@ -54,6 +55,29 @@ def _server(env_prefix: str):
             build_submit_investigation_report_tool(),
         ],
     )
+
+
+def test_run_start_investigate_requires_initial_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-start-missing-prompt")
+    result = run_start_investigate({"title": "short title"})
+    assert result == {
+        "error": "missing_initial_prompt",
+        "message": "start_investigate requires a non-empty initial_prompt",
+    }
+
+
+def test_run_start_investigate_requires_title(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-start-missing-title")
+    result = run_start_investigate({"initial_prompt": "the user's raw message"})
+    assert result == {"error": "missing_title", "message": "start_investigate requires a non-empty title"}
+
+
+def test_run_start_investigate_opens_a_ticket_with_both_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-start-happy")
+    result = run_start_investigate({"initial_prompt": "the user's raw message", "title": "short title"})
+    assert result["title"] == "short title"
+    assert result["initial_prompt"] == "the user's raw message"
+    assert result["state"] == "investigating"
 
 
 @pytest.mark.asyncio

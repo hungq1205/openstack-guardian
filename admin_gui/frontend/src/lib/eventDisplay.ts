@@ -1,3 +1,5 @@
+import type { BadgeVariant } from '@astryxdesign/core/Badge'
+
 // Friendly titles for the two investigation-reporting tools -- an admin
 // reading "submit_investigation_plan" everywhere it appears (dialog title,
 // timeline row, toast, pending panel) gets no benefit from the literal tool
@@ -51,4 +53,23 @@ export function describeLatestAction(name: string, status: string): string {
   const isLifecycleTool = name in FRIENDLY_NAMES
   const verb = _STATUS_VERB[status] ?? (isLifecycleTool ? 'approved' : 'succeeded')
   return `${displayEventName(name)} ${verb}`
+}
+
+// Shared between EventDetailDialog and TicketDetailDialog's plan/report
+// list -- one event-status vocabulary, not two that could drift apart.
+export const STATUS_BADGE_VARIANT: Record<string, BadgeVariant> = {
+  success: 'success',
+  error: 'error',
+  pending: 'warning',
+  approved: 'warning',
+  denied: 'neutral',
+  changes_requested: 'neutral',
+}
+
+// A rejected plan (request-changes on submit_investigation_plan) carries the
+// same badge severity as a flat denial, but its own label -- REJECTED --
+// rather than the raw "CHANGES_REQUESTED" status string, so it reads as
+// "not approved as-is" at a glance without being confused with a plain no.
+export function statusLabel(status: string): string {
+  return status === 'changes_requested' ? 'REJECTED' : status.toUpperCase()
 }

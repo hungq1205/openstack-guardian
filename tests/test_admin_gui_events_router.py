@@ -185,6 +185,32 @@ def test_list_events_filters_by_ticket_id(client: TestClient, monkeypatch: pytes
     assert {e["name"] for e in by_unassigned} == {"ticket_call", "unassigned_call"}
 
 
+def test_list_events_filters_by_ticket_state(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-state-a")
+    investigating_ticket = tickets.open_ticket("still investigating")
+    log_event(
+        server="cmp-admin", kind="tool", name="investigating_call", arguments={}, status="success",
+        error_message=None, result_summary={}, duration_ms=1.0, ticket_id=investigating_ticket["id"],
+    )
+
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-state-b")
+    planned_ticket = tickets.open_ticket("already planned")
+    plan_event_id = log_pending_event(
+        server="cmp-admin", kind="tool", name="submit_investigation_plan", arguments={}, ticket_id=planned_ticket["id"],
+    )
+    client.post(f"/api/events/{plan_event_id}/approve")
+    log_event(
+        server="cmp-admin", kind="tool", name="planned_call", arguments={}, status="success",
+        error_message=None, result_summary={}, duration_ms=1.0, ticket_id=planned_ticket["id"],
+    )
+
+    by_state = client.get("/api/events", params={"ticket_state": "planned"}).json()
+    assert [e["name"] for e in by_state] == ["planned_call", "submit_investigation_plan"]
+
+    by_other_state = client.get("/api/events", params={"ticket_state": "investigating"}).json()
+    assert [e["name"] for e in by_other_state] == ["investigating_call"]
+
+
 def test_approving_a_plan_event_advances_its_ticket(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-b")
     ticket = tickets.open_ticket("investigate something else")

@@ -7,7 +7,7 @@ import {
   TicketIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline'
-import { Badge, type BadgeVariant } from '@astryxdesign/core/Badge'
+import { Badge } from '@astryxdesign/core/Badge'
 import { Button } from '@astryxdesign/core/Button'
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog'
 import { Layout, LayoutContent } from '@astryxdesign/core/Layout'
@@ -15,7 +15,7 @@ import { HStack, VStack } from '@astryxdesign/core/Stack'
 import { TextArea } from '@astryxdesign/core/TextArea'
 import { Heading, Text } from '@astryxdesign/core/Text'
 import type { EventOut } from '../lib/api'
-import { displayEventName } from '../lib/eventDisplay'
+import { displayEventName, STATUS_BADGE_VARIANT, statusLabel } from '../lib/eventDisplay'
 import { formatDuration, formatFullTime } from '../lib/time'
 import { CodeInline, CodePanel } from './CodePanel'
 import { FieldCards } from './FieldCards'
@@ -29,23 +29,6 @@ function MetaItem({ icon: Icon, children }: { icon: typeof ClockIcon; children: 
       </Text>
     </HStack>
   )
-}
-
-const STATUS_BADGE_VARIANT: Record<string, BadgeVariant> = {
-  success: 'success',
-  error: 'error',
-  pending: 'warning',
-  approved: 'warning',
-  denied: 'neutral',
-  changes_requested: 'neutral',
-}
-
-// A rejected plan (request-changes on submit_investigation_plan) carries the
-// same badge severity as a flat denial, but its own label -- REJECTED --
-// rather than the raw "CHANGES_REQUESTED" status string, so it reads as
-// "not approved as-is" at a glance without being confused with a plain no.
-function statusLabel(status: string): string {
-  return status === 'changes_requested' ? 'REJECTED' : status.toUpperCase()
 }
 
 // Only submit_investigation_plan's own handler reads a request-changes

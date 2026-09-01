@@ -44,15 +44,26 @@ from mcp_servers.shared import tickets
 _START_INVESTIGATE_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "initial_prompt": {
+            "type": "string",
+            "description": (
+                "The user's original request, verbatim -- their raw message, paste, or "
+                "pasted error/alert text, exactly as given. Snapshotted once and never "
+                "edited again; shown in the admin GUI as this ticket's 'Started from' text."
+            ),
+        },
         "title": {
             "type": "string",
             "description": (
-                "The user's original request/prompt, verbatim or lightly summarized -- "
-                "becomes this ticket's display title in the admin GUI."
+                "A short (aim under ~60 characters) display-name summary of this "
+                "investigation, derived from `initial_prompt` plus any error/log text "
+                "you've already seen -- e.g. 'server abc-123 stuck in BUILD', not a "
+                "restatement of the whole prompt. Becomes this ticket's title in the admin "
+                "GUI; an operator can rename it later, so it doesn't need to be perfect."
             ),
         },
     },
-    "required": ["title"],
+    "required": ["initial_prompt", "title"],
 }
 
 _SUBMIT_PLAN_INPUT_SCHEMA: dict[str, Any] = {
@@ -158,10 +169,16 @@ _SUBMIT_REPORT_INPUT_SCHEMA: dict[str, Any] = {
 
 
 def run_start_investigate(arguments: dict[str, Any]) -> dict[str, Any]:
+    initial_prompt = str(arguments.get("initial_prompt") or "").strip()
     title = str(arguments.get("title") or "").strip()
+    if not initial_prompt:
+        return {
+            "error": "missing_initial_prompt",
+            "message": "start_investigate requires a non-empty initial_prompt",
+        }
     if not title:
         return {"error": "missing_title", "message": "start_investigate requires a non-empty title"}
-    return tickets.open_ticket(title)
+    return tickets.open_ticket(title, initial_prompt)
 
 
 def run_submit_investigation_plan(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -191,12 +208,13 @@ def build_start_investigate_tool() -> ExtraTool:
     tool = types.Tool(
         name="start_investigate",
         description=(
-            "Open a ticket for this investigation, using the user's original request as its "
-            "title. Call this first, before anything else -- every subsequent tool call and "
-            "resource read in this conversation is then attributed to this ticket "
-            "automatically, with no argument to carry. Not gated: this is bookkeeping, not a "
-            "state change to real infrastructure. Calling it again in the same conversation "
-            "returns the same ticket rather than creating a second one."
+            "Open a ticket for this investigation: `initial_prompt` is the user's original "
+            "request verbatim, `title` is a short display-name summary you derive from it "
+            "(plus any error/log text already seen). Call this first, before anything else -- "
+            "every subsequent tool call and resource read in this conversation is then "
+            "attributed to this ticket automatically, with no argument to carry. Not gated: "
+            "this is bookkeeping, not a state change to real infrastructure. Calling it again "
+            "in the same conversation returns the same ticket rather than creating a second one."
         ),
         inputSchema=_START_INVESTIGATE_INPUT_SCHEMA,
         annotations=types.ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),

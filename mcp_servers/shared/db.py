@@ -122,6 +122,16 @@ CREATE TABLE IF NOT EXISTS comments (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_comments_event_id ON comments(event_id);
+
+CREATE TABLE IF NOT EXISTS ticket_state_transitions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    ts TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ticket_state_transitions_ticket_id ON ticket_state_transitions(ticket_id);
+CREATE INDEX IF NOT EXISTS idx_ticket_state_transitions_ts ON ticket_state_transitions(ts);
 """
 
 
@@ -158,6 +168,7 @@ def ensure_schema() -> None:
         _seed_built_in_masking_patterns(conn)
         _migrate_spec_sources_columns(conn)
         _migrate_events_columns(conn)
+        _migrate_tickets_columns(conn)
         conn.commit()
     finally:
         conn.close()
@@ -196,6 +207,25 @@ def _migrate_spec_sources_columns(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE spec_sources RENAME COLUMN replaces TO domain")
         else:
             conn.execute("ALTER TABLE spec_sources ADD COLUMN domain TEXT")
+
+
+def _migrate_tickets_columns(conn: sqlite3.Connection) -> None:
+    """`tickets.initial_prompt` (the immutable original request, split out
+    from `title` once `title` became renamable in the admin GUI) and
+    `tickets.deleted_at` (the admin GUI's soft-delete/Trash marker -- an
+    admin-GUI-only concept, never touched by any MCP tool) were both added
+    after some `data/guardian.db` files already existed -- same reasoning as
+    `_migrate_events_columns`. Backfill: a ticket that predates this
+    migration never had a separately captured prompt, so best-effort copy
+    its existing `title` into `initial_prompt` once -- the only prompt-like
+    text this project ever recorded for that row."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(tickets)")}
+    if "initial_prompt" not in columns:
+        conn.execute("ALTER TABLE tickets ADD COLUMN initial_prompt TEXT")
+        conn.execute("UPDATE tickets SET initial_prompt = title WHERE initial_prompt IS NULL")
+    if "deleted_at" not in columns:
+        conn.execute("ALTER TABLE tickets ADD COLUMN deleted_at TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tickets_deleted_at ON tickets(deleted_at)")
 
 
 def _seed_built_in_masking_patterns(conn: sqlite3.Connection) -> None:

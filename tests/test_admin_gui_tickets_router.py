@@ -97,3 +97,82 @@ def test_delete_ticket_detaches_its_events_instead_of_deleting_them(
 def test_delete_ticket_returns_404_for_unknown_id(client: TestClient) -> None:
     response = client.delete("/api/tickets/999999")
     assert response.status_code == 404
+
+
+def test_update_ticket_renames_without_touching_initial_prompt(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-rename")
+    ticket = tickets.open_ticket("original title", "the raw original prompt")
+
+    response = client.patch(f"/api/tickets/{ticket['id']}", json={"title": "renamed title"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["title"] == "renamed title"
+    assert body["initial_prompt"] == "the raw original prompt"
+
+
+def test_update_ticket_rejects_a_blank_title(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-rename-blank")
+    ticket = tickets.open_ticket("t")
+    response = client.patch(f"/api/tickets/{ticket['id']}", json={"title": "   "})
+    assert response.status_code == 400
+
+
+def test_update_ticket_returns_404_for_unknown_id(client: TestClient) -> None:
+    response = client.patch("/api/tickets/999999", json={"title": "x"})
+    assert response.status_code == 404
+
+
+def test_trash_and_restore_round_trip(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-trash")
+    ticket = tickets.open_ticket("t")
+
+    trashed = client.post(f"/api/tickets/{ticket['id']}/trash")
+    assert trashed.status_code == 200
+    assert trashed.json()["deleted_at"] is not None
+
+    # excluded from the default list, present in the trashed one
+    assert ticket["id"] not in [row["id"] for row in client.get("/api/tickets").json()]
+    assert ticket["id"] in [row["id"] for row in client.get("/api/tickets", params={"trashed": True}).json()]
+    # still fetchable directly by id even while trashed
+    assert client.get(f"/api/tickets/{ticket['id']}").status_code == 200
+
+    restored = client.post(f"/api/tickets/{ticket['id']}/restore")
+    assert restored.status_code == 200
+    assert restored.json()["deleted_at"] is None
+    assert ticket["id"] in [row["id"] for row in client.get("/api/tickets").json()]
+    assert ticket["id"] not in [row["id"] for row in client.get("/api/tickets", params={"trashed": True}).json()]
+
+
+def test_trash_and_restore_return_404_for_unknown_id(client: TestClient) -> None:
+    assert client.post("/api/tickets/999999/trash").status_code == 404
+    assert client.post("/api/tickets/999999/restore").status_code == 404
+
+
+def test_list_ticket_transitions_orders_newest_first_and_excludes_trashed(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-transitions-a")
+    kept = tickets.open_ticket("kept ticket")
+    tickets.on_decision(kept["id"], "submit_investigation_plan", "approved")
+
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-transitions-b")
+    trashed_ticket = tickets.open_ticket("trashed ticket")
+    client.post(f"/api/tickets/{trashed_ticket['id']}/trash")
+
+    response = client.get("/api/tickets/transitions")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert all(row["ticket_id"] != trashed_ticket["id"] for row in body)
+    kept_rows = [row for row in body if row["ticket_id"] == kept["id"]]
+    assert [row["to_state"] for row in kept_rows] == ["planned", "investigating"]  # newest first
+    assert kept_rows[0]["ticket_title"] == "kept ticket"
+
+
+def test_list_ticket_transitions_route_takes_precedence_over_ticket_id(client: TestClient) -> None:
+    # If route ordering ever regresses, "/transitions" gets coerced as a
+    # ticket_id path param instead and this 422s.
+    response = client.get("/api/tickets/transitions")
+    assert response.status_code == 200

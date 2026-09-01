@@ -68,34 +68,61 @@ def current_ticket_id(conn: sqlite3.Connection | None = None) -> int | None:
         return None
 
 
-def open_ticket(title: str) -> dict[str, Any]:
+def _record_transition(
+    conn: sqlite3.Connection, ticket_id: int, *, from_state: str | None, to_state: str, ts: str | None = None
+) -> None:
+    """Appends one row to `ticket_state_transitions` -- the append-only log
+    the admin GUI's timeline reads (`tickets.state` itself only ever holds
+    the *current* state). Takes the caller's connection so it commits
+    atomically with whatever state change it's recording, never a separate
+    best-effort write of its own."""
+    conn.execute(
+        "INSERT INTO ticket_state_transitions (ticket_id, from_state, to_state, ts) VALUES (?, ?, ?, ?)",
+        (ticket_id, from_state, to_state, ts or db.utc_now_iso()),
+    )
+
+
+def open_ticket(title: str, initial_prompt: str | None = None) -> dict[str, Any]:
     """Idempotent per session -- `start_investigate` called twice in one
     session returns the existing ticket rather than erroring or duplicating,
-    since one session is always exactly one investigation."""
+    since one session is always exactly one investigation.
+
+    `initial_prompt` is the user's original request, snapshotted once and
+    never edited again -- `title` alone used to serve both roles, but is now
+    a renamable display name, so callers that only ever had one string
+    (existing tests, any future single-string caller) get `initial_prompt`
+    defaulted to `title` rather than losing it."""
     session_id = current_session_id()
     if session_id is None:
         return {
             "error": "no_session",
             "message": f"{_SESSION_ENV_VAR} is not set in this process's environment",
         }
+    prompt = initial_prompt if initial_prompt is not None else title
     db.ensure_schema()
     conn = db.connect()
     try:
         existing = conn.execute("SELECT * FROM tickets WHERE session_id = ?", (session_id,)).fetchone()
         if existing is not None:
             return dict(existing)
+        created_at = db.utc_now_iso()
         cursor = conn.execute(
-            "INSERT INTO tickets (session_id, title, state, created_at) VALUES (?, ?, 'investigating', ?)",
-            (session_id, title, db.utc_now_iso()),
+            "INSERT INTO tickets (session_id, title, initial_prompt, state, created_at) "
+            "VALUES (?, ?, ?, 'investigating', ?)",
+            (session_id, title, prompt, created_at),
         )
+        ticket_id = cursor.lastrowid
+        assert ticket_id is not None
+        _record_transition(conn, ticket_id, from_state=None, to_state="investigating", ts=created_at)
         conn.commit()
         return {
-            "id": cursor.lastrowid,
+            "id": ticket_id,
             "session_id": session_id,
             "title": title,
+            "initial_prompt": prompt,
             "resource_id": None,
             "state": "investigating",
-            "created_at": db.utc_now_iso(),
+            "created_at": created_at,
             "closed_at": None,
         }
     finally:
@@ -131,7 +158,9 @@ def _set_state(ticket_id: int, state: str) -> None:
         db.ensure_schema()
         conn = db.connect()
         try:
+            row = conn.execute("SELECT state FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
             conn.execute("UPDATE tickets SET state = ? WHERE id = ?", (state, ticket_id))
+            _record_transition(conn, ticket_id, from_state=row["state"] if row else None, to_state=state)
             conn.commit()
         finally:
             conn.close()
@@ -144,10 +173,12 @@ def _close(ticket_id: int, state: str) -> None:
         db.ensure_schema()
         conn = db.connect()
         try:
+            row = conn.execute("SELECT state FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
             conn.execute(
                 "UPDATE tickets SET state = ?, closed_at = ? WHERE id = ?",
                 (state, db.utc_now_iso(), ticket_id),
             )
+            _record_transition(conn, ticket_id, from_state=row["state"] if row else None, to_state=state)
             conn.commit()
         finally:
             conn.close()
@@ -160,10 +191,12 @@ def _bump_if(ticket_id: int, *, from_state: str, to_state: str) -> None:
         db.ensure_schema()
         conn = db.connect()
         try:
-            conn.execute(
+            cursor = conn.execute(
                 "UPDATE tickets SET state = ? WHERE id = ? AND state = ?",
                 (to_state, ticket_id, from_state),
             )
+            if cursor.rowcount > 0:
+                _record_transition(conn, ticket_id, from_state=from_state, to_state=to_state)
             conn.commit()
         finally:
             conn.close()

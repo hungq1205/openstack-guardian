@@ -7,17 +7,23 @@ import { HStack, VStack } from '@astryxdesign/core/Stack'
 import { Switch } from '@astryxdesign/core/Switch'
 import { Heading, Text } from '@astryxdesign/core/Text'
 import { TextInput } from '@astryxdesign/core/TextInput'
+import { DateTimeField } from '../components/DateTimeField'
 import { EventDetailDialog } from '../components/EventDetailDialog'
 import { EventTimeline } from '../components/EventTimeline'
 import { api, type EventOut, type TicketOut } from '../lib/api'
 import { isAutoOpenEvent } from '../lib/eventDisplay'
 import { usePendingApprovals } from '../lib/pendingApprovals'
-import { bangkokLocalToUtcIso } from '../lib/time'
+import { localInputValueToUtcIso } from '../lib/time'
+import { STATE_LABEL } from '../lib/ticketState'
 import { useToolCatalog } from '../lib/toolCatalog'
 
 const SERVER_OPTIONS = ['', 'cmp-admin', 'cmp-logs', 'cmp-notify']
 const KIND_OPTIONS = ['', 'tool', 'resource', 'prompt']
 const STATUS_OPTIONS = ['', 'success', 'error']
+const TICKET_STATE_OPTIONS: SelectorOptionData[] = [
+  { value: '', label: 'Any ticket state' },
+  ...Object.entries(STATE_LABEL).map(([value, label]) => ({ value, label })),
+]
 const MAX_LIVE_EVENTS = 500
 
 function matchesTicketFilter(ticket: string, eventTicketId: number | null): boolean {
@@ -26,37 +32,17 @@ function matchesTicketFilter(ticket: string, eventTicketId: number | null): bool
   return String(eventTicketId) === ticket
 }
 
-function DateTimeField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string
-  value: string
-  onChange: (value: string) => void
-}) {
-  return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <Text type="label" size="xsm" color="secondary">
-        {label}
-      </Text>
-      <input
-        type="datetime-local"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        style={{
-          height: 32,
-          padding: '0 10px',
-          borderRadius: 'var(--radius-element)',
-          border: '1px solid var(--color-border)',
-          background: 'var(--color-background-surface)',
-          color: 'var(--color-text-primary)',
-          fontSize: 13,
-          fontFamily: 'inherit',
-        }}
-      />
-    </label>
-  )
+// Live-tail events are matched client-side against a state filter (the
+// backend's own `ticket_state` filter only applies to the initial/refresh
+// fetch) by looking up each event's ticket in the same list already fetched
+// for the Ticket selector -- no separate lookup, no schema change.
+function matchesTicketStateFilter(
+  ticketState: string,
+  eventTicketId: number | null,
+  ticketStatesById: Map<number, string>,
+): boolean {
+  if (!ticketState) return true
+  return eventTicketId !== null && ticketStatesById.get(eventTicketId) === ticketState
 }
 
 export function LogsPage() {
@@ -66,6 +52,7 @@ export function LogsPage() {
   const [kind, setKind] = useState('')
   const [status, setStatus] = useState('')
   const [ticket, setTicket] = useState(() => searchParams.get('ticket') ?? '')
+  const [ticketState, setTicketState] = useState(() => searchParams.get('state') ?? '')
   const [tickets, setTickets] = useState<TicketOut[]>([])
   const [since, setSince] = useState('')
   const [until, setUntil] = useState('')
@@ -90,7 +77,13 @@ export function LogsPage() {
     [tickets],
   )
 
-  const activeFilterCount = [server, kind, status, ticket, since, until].filter(Boolean).length
+  const activeFilterCount = [server, kind, status, ticket, ticketState, since, until].filter(Boolean).length
+
+  const ticketStatesById = useMemo(() => new Map(tickets.map((t) => [t.id, t.state])), [tickets])
+  const ticketStatesByIdRef = useRef(ticketStatesById)
+  useEffect(() => {
+    ticketStatesByIdRef.current = ticketStatesById
+  }, [ticketStatesById])
 
   // decide() (from PendingApprovalsProvider) updates the shared pending list
   // live -- that's what makes the toast/Dashboard panel disappear instantly.
@@ -125,15 +118,16 @@ export function LogsPage() {
         kind: kind || undefined,
         status: status || undefined,
         ticket_id: ticket || undefined,
-        since: bangkokLocalToUtcIso(since),
-        until: bangkokLocalToUtcIso(until),
+        ticket_state: ticketState || undefined,
+        since: localInputValueToUtcIso(since),
+        until: localInputValueToUtcIso(until),
         limit: 200,
       })
       .then(setEvents)
       .catch((err: Error) => setError(err.message))
   }
 
-  useEffect(reload, [server, kind, status, ticket, since, until])
+  useEffect(reload, [server, kind, status, ticket, ticketState, since, until])
 
   useEffect(() => {
     if (!isLive) {
@@ -149,7 +143,8 @@ export function LogsPage() {
         (!server || event.server === server) &&
         (!kind || event.kind === kind) &&
         (!status || event.status === status) &&
-        matchesTicketFilter(ticket, event.ticket_id)
+        matchesTicketFilter(ticket, event.ticket_id) &&
+        matchesTicketStateFilter(ticketState, event.ticket_id, ticketStatesByIdRef.current)
       setEvents((current) => {
         const existingIndex = current.findIndex((e) => e.id === event.id)
         if (!matchesFilters) {
@@ -171,7 +166,7 @@ export function LogsPage() {
       })
     })
     return () => source.close()
-  }, [isLive, server, kind, status, ticket])
+  }, [isLive, server, kind, status, ticket, ticketState])
 
   const visibleEvents = useMemo(() => {
     const needle = search.trim().toLowerCase()
@@ -188,6 +183,7 @@ export function LogsPage() {
     setKind('')
     setStatus('')
     setTicket('')
+    setTicketState('')
     setSince('')
     setUntil('')
   }
@@ -253,6 +249,12 @@ export function LogsPage() {
               <Selector label="Kind" options={KIND_OPTIONS} value={kind} onChange={(v) => setKind(v ?? '')} />
               <Selector label="Status" options={STATUS_OPTIONS} value={status} onChange={(v) => setStatus(v ?? '')} />
               <Selector label="Ticket" options={ticketOptions} value={ticket} onChange={(v) => setTicket(v ?? '')} />
+              <Selector
+                label="Ticket state"
+                options={TICKET_STATE_OPTIONS}
+                value={ticketState}
+                onChange={(v) => setTicketState(v ?? '')}
+              />
               <DateTimeField label="From" value={since} onChange={setSince} />
               <DateTimeField label="To" value={until} onChange={setUntil} />
               {activeFilterCount > 0 && <Button label="Clear filters" variant="ghost" onClick={clearFilters} />}

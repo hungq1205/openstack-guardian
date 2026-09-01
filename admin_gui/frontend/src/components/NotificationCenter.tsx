@@ -14,13 +14,23 @@ import { EventDetailDialog } from './EventDetailDialog'
 // The one place a pending approval is impossible to miss regardless of what
 // page you're on: a toast stack pinned bottom-right, mounted once in Shell.
 // Each toast approves/denies inline, or opens the same detail dialog Logs
-// uses for full context before deciding.
+// uses for full context before deciding. A toast can also be dismissed on
+// its own (the small X, top-right) without deciding anything -- that just
+// stops showing this popup; the approval itself is still pending and still
+// shows up in the Dashboard's "Pending approvals" banner and on Logs, so
+// dismissing never loses track of it.
 export function NotificationCenter() {
   const { pendingEvents, decide } = usePendingApprovals()
   const { descriptions } = useToolCatalog()
   const [expanded, setExpanded] = useState<EventOut | null>(null)
+  const [dismissedIds, setDismissedIds] = useState<Set<number>>(new Set())
 
-  if (pendingEvents.length === 0) return null
+  const visibleEvents = pendingEvents.filter((event) => !dismissedIds.has(event.id))
+  if (visibleEvents.length === 0) return null
+
+  function dismiss(eventId: number) {
+    setDismissedIds((current) => new Set(current).add(eventId))
+  }
 
   return (
     <>
@@ -36,7 +46,7 @@ export function NotificationCenter() {
           zIndex: 1000,
         }}
       >
-        {pendingEvents.map((event) => {
+        {visibleEvents.map((event) => {
           const description = catalogDescriptionFor(event.name, descriptions)
           return (
             <Card
@@ -50,19 +60,33 @@ export function NotificationCenter() {
               }}
             >
               <VStack gap={2}>
-                <VStack gap={0}>
-                  <Text type="body" size="xsm" color="secondary">
-                    Awaiting approval · {event.server}
-                  </Text>
-                  <Text type="body" weight="bold">
-                    {displayEventName(event.name)}
-                  </Text>
-                  {description && (
-                    <Text type="body" size="sm" color="secondary">
-                      {truncate(description, 110)}
+                <HStack align="start" gap={2} style={{ justifyContent: 'space-between' }}>
+                  <VStack gap={0} style={{ minWidth: 0, flex: 1 }}>
+                    <Text type="body" size="xsm" color="secondary">
+                      Awaiting approval · {event.server}
                     </Text>
-                  )}
-                </VStack>
+                    <Text type="body" weight="bold">
+                      {displayEventName(event.name)}
+                    </Text>
+                    {description && (
+                      <Text type="body" size="sm" color="secondary">
+                        {truncate(description, 110)}
+                      </Text>
+                    )}
+                  </VStack>
+                  <Button
+                    label="Dismiss"
+                    isIconOnly
+                    size="sm"
+                    variant="ghost"
+                    icon={<XMarkIcon style={{ width: 12, height: 12 }} />}
+                    style={{ height: 20, minHeight: 20, width: 20, padding: 0, flexShrink: 0 }}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      dismiss(event.id)
+                    }}
+                  />
+                </HStack>
                 <HStack gap={2} onClick={(e) => e.stopPropagation()}>
                   <Button
                     label="Approve"
