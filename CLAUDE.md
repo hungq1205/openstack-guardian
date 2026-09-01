@@ -154,6 +154,33 @@ event log, tickets, failure patterns).
 - `telemetry.py` — event logging surfaced by the admin GUI's `events.py`
   router.
 
+### Mock stack (`mock/`)
+
+Local stand-ins for the two external systems `cmp_admin_mcp`/`cmp_logs_mcp`
+talk to, for exercising real HTTP round trips without a real CMP/Elasticsearch
+deployment. Neither is used by the automated test suite (`tests/` uses
+`httpx.MockTransport` instead) — these are for manual/interactive runs only.
+
+- **`mock/cmp_server/`** — a dependency-free `http.server` stand-in for the
+  CMP admin API (`python mock/cmp_server/server.py`, `:8081` by default). One
+  seeded incident (server `4a76a7df-f2dd-479f-bcf7-118a19f71c40`, *found but
+  suspended*) is genuinely stateful — calling `admin_api_servers_recreate` on
+  it flips it to `active`/`running` in memory, so it can be driven through a
+  real find-diagnose-fix-verify cycle. Every other id/path/method gets a
+  generic `200 {METHOD} {PATH}` echo, enough to confirm request shape without
+  faking ~100 other response bodies. See `mock/cmp_server/README.md`.
+- **`mock/elasticsearch/`** — a real single-node Elasticsearch + Kibana via
+  `docker compose up -d`, seeded by `python seed.py` from `mock-logs-23.csv`
+  (a real Kibana Discover export, 14,856 rows, exactly one seeded ERROR — a
+  `cinderclient.exceptions.NotFound` matching the `volume_not_found` KB
+  entry). See `mock/elasticsearch/README.md`.
+
+Point the real servers at either with the same env vars used against a real
+deployment (`CMP_ADMIN_V2_BASE_URL=http://127.0.0.1:8081`,
+`CMP_LOGS_ES_URL=http://localhost:9200` /
+`CMP_LOGS_ES_INDEX=iaas-api-2026.08.23`) — both clients are mock-agnostic, so
+nothing else changes.
+
 ### The `investigate-incident` skill (`.claude/skills/investigate-incident/`)
 
 Drives incident response using the `cmp-admin` MCP tools/resources: calls
