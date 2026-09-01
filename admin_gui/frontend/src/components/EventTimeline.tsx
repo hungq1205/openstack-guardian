@@ -76,7 +76,7 @@ function leadSentence(text: string): string {
 // meta-tools, e.g. search_tools/get_tool_schema) falls back to the HTTP verb
 // captured in `action`; a call with no action at all (purely local) is
 // treated as a read since it has no side effect to flag.
-function classifyEvent(event: EventOut, toolKind: Record<string, 'read' | 'action'>): 'read' | 'action' {
+export function classifyEvent(event: EventOut, toolKind: Record<string, 'read' | 'action'>): 'read' | 'action' {
   if (event.kind !== 'tool') return 'read'
   const known = toolKind[event.name]
   if (known) return known

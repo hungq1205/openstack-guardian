@@ -26,6 +26,17 @@ def _ticket_row(ticket_id: int) -> dict[str, object]:
     return dict(row)
 
 
+def _transitions(ticket_id: int) -> list[dict[str, object]]:
+    conn = db.connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM ticket_state_transitions WHERE ticket_id = ? ORDER BY id", (ticket_id,)
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(row) for row in rows]
+
+
 def test_open_ticket_requires_a_session_id(monkeypatch: pytest.MonkeyPatch) -> None:
     # Explicit delenv, not just an assumption of absence -- this suite is
     # itself commonly run from inside a real Claude Code session, which sets
@@ -47,6 +58,32 @@ def test_open_ticket_creates_an_investigating_ticket(monkeypatch: pytest.MonkeyP
     assert ticket["resource_id"] is None
     row = _ticket_row(ticket["id"])
     assert row["session_id"] == "session-1"
+
+
+def test_open_ticket_defaults_initial_prompt_to_title(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-prompt-default")
+    ticket = tickets.open_ticket("investigate server abc-123")
+    assert ticket["initial_prompt"] == "investigate server abc-123"
+    assert _ticket_row(ticket["id"])["initial_prompt"] == "investigate server abc-123"
+
+
+def test_open_ticket_stores_a_distinct_initial_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-prompt-distinct")
+    ticket = tickets.open_ticket("server abc-123 stuck in BUILD", "the customer says their server won't boot, log attached: ...")
+    assert ticket["title"] == "server abc-123 stuck in BUILD"
+    assert ticket["initial_prompt"] == "the customer says their server won't boot, log attached: ..."
+    row = _ticket_row(ticket["id"])
+    assert row["title"] == "server abc-123 stuck in BUILD"
+    assert row["initial_prompt"] == "the customer says their server won't boot, log attached: ..."
+
+
+def test_open_ticket_records_the_first_transition(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-transition-open")
+    ticket = tickets.open_ticket("t")
+    transitions = _transitions(ticket["id"])
+    assert len(transitions) == 1
+    assert transitions[0]["from_state"] is None
+    assert transitions[0]["to_state"] == "investigating"
 
 
 def test_open_ticket_is_idempotent_per_session(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -85,6 +122,13 @@ def test_on_dispatched_bumps_planned_to_resolving_on_first_action(monkeypatch: p
     tickets.on_dispatched(ticket["id"], "rebuild_server", True)
     assert _ticket_row(ticket["id"])["state"] == "resolving"
 
+    transitions = _transitions(ticket["id"])
+    assert [(t["from_state"], t["to_state"]) for t in transitions] == [
+        (None, "investigating"),
+        ("investigating", "planned"),
+        ("planned", "resolving"),
+    ]
+
 
 def test_on_dispatched_ignores_read_only_calls_and_lifecycle_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-6")
@@ -96,6 +140,30 @@ def test_on_dispatched_ignores_read_only_calls_and_lifecycle_tools(monkeypatch: 
 
     tickets.on_dispatched(ticket["id"], "submit_investigation_report", True)
     assert _ticket_row(ticket["id"])["state"] == "planned"
+
+    # `on_dispatched`'s no-op paths (`requires_approval=False`, a lifecycle
+    # tool name) must never write a transition row -- only the plan approval
+    # above should have.
+    transitions = _transitions(ticket["id"])
+    assert [(t["from_state"], t["to_state"]) for t in transitions] == [
+        (None, "investigating"),
+        ("investigating", "planned"),
+    ]
+
+
+def test_bump_if_writes_no_transition_when_the_conditional_update_is_a_no_op(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-bump-noop")
+    ticket = tickets.open_ticket("t")
+    # Ticket is still "investigating", not "planned" -- `on_dispatched`'s
+    # `from_state="planned"` guard must not match, so the conditional UPDATE
+    # affects zero rows and no transition should be fabricated.
+    tickets.on_dispatched(ticket["id"], "rebuild_server", True)
+    assert _ticket_row(ticket["id"])["state"] == "investigating"
+    transitions = _transitions(ticket["id"])
+    assert len(transitions) == 1
+    assert (transitions[0]["from_state"], transitions[0]["to_state"]) == (None, "investigating")
 
 
 def test_on_pending_report_moves_ticket_to_in_review(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -128,6 +196,10 @@ def test_on_decision_transition_matrix(
     row = _ticket_row(ticket["id"])
     assert row["state"] == expected_state
     assert (row["closed_at"] is not None) is expect_closed
+
+    transitions = _transitions(ticket["id"])
+    assert transitions[-1]["from_state"] == "investigating"
+    assert transitions[-1]["to_state"] == expected_state
 
 
 def test_on_decision_ignores_unknown_tool_names(monkeypatch: pytest.MonkeyPatch) -> None:

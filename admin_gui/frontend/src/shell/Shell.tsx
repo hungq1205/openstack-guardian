@@ -8,8 +8,10 @@ import {
   ChartBarIcon,
   ClipboardDocumentListIcon,
   Cog6ToothIcon,
+  Cog8ToothIcon,
   DocumentTextIcon,
   ShieldCheckIcon,
+  TicketIcon,
 } from '@heroicons/react/24/outline'
 import { HomeIcon, ShieldCheckIcon as ShieldCheckIconSolid } from '@heroicons/react/24/solid'
 import { NotificationCenter } from '../components/NotificationCenter'
@@ -17,6 +19,7 @@ import { PendingApprovalsProvider } from '../lib/pendingApprovals'
 
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard', icon: HomeIcon },
+  { href: '/tickets', label: 'Tickets', icon: TicketIcon },
   { href: '/logs', label: 'Logs', icon: DocumentTextIcon },
 ] as const
 
@@ -26,6 +29,7 @@ const CONFIG_NAV_ITEMS = [
   { href: '/connections', label: 'Connections', icon: ChartBarIcon },
   { href: '/spec-sources', label: 'Spec Sources', icon: Cog6ToothIcon },
   { href: '/failure-patterns', label: 'Failure Patterns', icon: ClipboardDocumentListIcon },
+  { href: '/settings', label: 'Settings', icon: Cog8ToothIcon },
 ] as const
 
 // The top bar is a fixed dark strip regardless of light/dark theme mode --

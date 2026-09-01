@@ -12,25 +12,29 @@ import { Shell } from './shell/Shell'
 import { DashboardPage } from './pages/DashboardPage'
 import { CatalogPage } from './pages/CatalogPage'
 import { LogsPage } from './pages/LogsPage'
+import { TicketsPage } from './pages/TicketsPage'
 import { MaskingPage } from './pages/MaskingPage'
 import { ConnectionsPage } from './pages/ConnectionsPage'
 import { SpecSourcesPage } from './pages/SpecSourcesPage'
 import { FailurePatternsPage } from './pages/FailurePatternsPage'
+import { SettingsPage } from './pages/SettingsPage'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <Theme theme={cmpConsoleTheme}>
+    <Theme theme={cmpConsoleTheme} mode="light">
       <LinkProvider component={RouterLink}>
         <BrowserRouter>
           <Routes>
             <Route element={<Shell />}>
               <Route index element={<DashboardPage />} />
+              <Route path="tickets" element={<TicketsPage />} />
               <Route path="catalog" element={<CatalogPage />} />
               <Route path="logs" element={<LogsPage />} />
               <Route path="masking" element={<MaskingPage />} />
               <Route path="connections" element={<ConnectionsPage />} />
               <Route path="spec-sources" element={<SpecSourcesPage />} />
               <Route path="failure-patterns" element={<FailurePatternsPage />} />
+              <Route path="settings" element={<SettingsPage />} />
             </Route>
           </Routes>
         </BrowserRouter>

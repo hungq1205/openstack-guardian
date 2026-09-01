@@ -29,13 +29,16 @@ arrived in.
 
 ## 1. Extract the incident
 
-Before anything else, call `start_investigate` (on `cmp-admin`) with `title`
-set to the user's original request, verbatim or lightly summarized. Nothing
-else about how you work changes because of this -- every tool call and
-resource read for the rest of this conversation is attributed to the
-resulting ticket automatically, with no argument of your own to carry or
-remember. Calling it again later in the same conversation is harmless; it
-just hands back the same ticket rather than opening a second one.
+Before anything else, call `start_investigate` (on `cmp-admin`) with
+`initial_prompt` set to the user's original request, verbatim -- their raw
+message, paste, or pasted error/alert text, unedited -- and `title` set to a
+short display-name summary you derive from that prompt plus any error/log
+text you've already seen (e.g. "server abc-123 stuck in BUILD", not the full
+prompt restated). Nothing else about how you work changes because of this --
+every tool call and resource read for the rest of this conversation is
+attributed to the resulting ticket automatically, with no argument of your
+own to carry or remember. Calling it again later in the same conversation is
+harmless; it just hands back the same ticket rather than opening a second one.
 
 Pull out whatever identifies the problem, in whatever form it was given.
 Most commonly that's a `server_id`, but treat that as the common case, not
