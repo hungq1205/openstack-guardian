@@ -1,0 +1,12 @@
+{
+  "search_logs": {
+    "risk_level": null,
+    "tool_category": "read",
+    "section": "logs"
+  },
+  "follow_request_id": {
+    "risk_level": null,
+    "tool_category": "read",
+    "section": "logs"
+  }
+}

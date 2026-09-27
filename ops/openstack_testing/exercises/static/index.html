@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OpenStack VM Creation Exercises</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+</head>
+<body>
+<div class="lab-shell">
+  <div class="panel-left">
+    <div class="left-header">
+      <div id="progress-bar" class="progress-bar"></div>
+      <button id="next-btn" class="primary small">Next &rarr;</button>
+    </div>
+    <div class="progress-count" id="progress-label"></div>
+    <div class="left-content" id="left-content"></div>
+    <button id="prev-btn" class="ghost small prev-btn">&larr; Previous</button>
+  </div>
+
+  <div class="panel-right">
+    <div class="right-tab-bar">
+      <button class="right-tab-btn active" data-rtab="commands">Commands</button>
+      <button class="right-tab-btn" data-rtab="hint">Hint</button>
+      <button class="right-tab-btn" data-rtab="solution">Solution</button>
+      <button class="right-tab-btn" data-rtab="terminal">Terminal</button>
+    </div>
+    <div id="rtab-commands" class="right-tab-panel active"></div>
+    <div id="rtab-hint" class="right-tab-panel"></div>
+    <div id="rtab-solution" class="right-tab-panel"></div>
+    <div id="rtab-terminal" class="right-tab-panel">
+      <div class="terminal-header">
+        <span>root@openstack-vm</span>
+        <span id="term-status" class="term-status down">connecting...</span>
+      </div>
+      <div id="terminal"></div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

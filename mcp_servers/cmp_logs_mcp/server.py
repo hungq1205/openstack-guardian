@@ -2,21 +2,40 @@
 
 Not built on `mcp_servers.openapi_bridge`'s generic OpenAPI-to-MCP machinery
 -- Elasticsearch's search API isn't described by an OpenAPI spec here, and a
-handful of hardcoded operations doesn't need that generality.
+handful of hardcoded operations doesn't need that generality. Still reuses
+the OpenAPI-agnostic half of that module -- `ToolAnnotation`,
+`load_annotations`, `apply_annotation_override` all key off a plain tool
+name, none require an `OperationSpec` -- to give these 2 tools the same
+GUI-editable `hidden`/`section`/`tool_category` curation cmp-admin's
+operations have, via `mcp_servers/annotations/cmp_logs.json`. Deliberately
+does *not* reuse `annotations_for`/`description_for`: both require a real
+`OperationSpec` (an actual method+path), and inventing a fake one just to
+satisfy that signature would be worse than the small amount of duplication
+avoided -- these 2 tools already carry hand-written, comprehensive
+descriptions and a correct hardcoded `ToolAnnotations`, unlike an
+OpenAPI-derived tool whose spec-only text genuinely needs supplementing.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+from guardian_platform.config_store import get_tool_annotation_overrides
 from mcp import types
 from mcp.server.lowlevel import Server
 
 from mcp_servers.cmp_logs_mcp.client import ElasticsearchLogsClient
-from mcp_servers.shared.telemetry import instrument_dispatch
+from mcp_servers.openapi_bridge import (
+    ToolAnnotation,
+    apply_annotation_override,
+    load_annotations,
+)
 
 _SEARCH_LOGS = "search_logs"
 _FOLLOW_REQUEST_ID = "follow_request_id"
+
+_ANNOTATIONS_PATH = Path(__file__).resolve().parent.parent / "annotations" / "cmp_logs.json"
 
 _READ_ONLY_ANNOTATIONS = types.ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False)
 
@@ -109,67 +128,90 @@ _FOLLOW_REQUEST_ID_SCHEMA: dict[str, Any] = {
 }
 
 
+_TOOL_DEFS: tuple[tuple[str, str, dict[str, Any]], ...] = (
+    (_SEARCH_LOGS, _SEARCH_LOGS_DESCRIPTION, _SEARCH_LOGS_SCHEMA),
+    (_FOLLOW_REQUEST_ID, _FOLLOW_REQUEST_ID_DESCRIPTION, _FOLLOW_REQUEST_ID_SCHEMA),
+)
+
+
+def _curated_annotations() -> dict[str, ToolAnnotation | None]:
+    """Both tools' effective curated annotation (shipped JSON + any admin
+    GUI override applied) -- shared by `build_server` (the live server) and
+    `all_tools_with_visibility` (the admin GUI's catalog listing), so both
+    always agree."""
+    base_annotations = load_annotations(_ANNOTATIONS_PATH)
+    overrides = get_tool_annotation_overrides("cmp-logs")
+    return {
+        name: apply_annotation_override(base_annotations.get(name), overrides.get(name))
+        for name, _description, _schema in _TOOL_DEFS
+    }
+
+
+def _tool_annotations(name: str, curated: dict[str, ToolAnnotation | None]) -> types.ToolAnnotations:
+    """Both tools are read-only by nature -- `_READ_ONLY_ANNOTATIONS` is the
+    base every curated override, if any, layers on top of, same pattern as
+    `openapi_bridge.annotations_for`'s method-based base."""
+    hints = _READ_ONLY_ANNOTATIONS.model_dump(exclude_none=True)
+    entry = curated[name]
+    if entry is not None:
+        if entry.read_only is not None:
+            hints["readOnlyHint"] = entry.read_only
+        if entry.destructive is not None:
+            hints["destructiveHint"] = entry.destructive
+        if entry.idempotent is not None:
+            hints["idempotentHint"] = entry.idempotent
+    return types.ToolAnnotations.model_validate(hints)
+
+
 def build_server() -> Server:
+    """2026-09-26: piped through `guardian-admin` as a proxied external
+    connection now (see the top-level workspace CLAUDE.md's "proxy-gateway"
+    section), same as `cmp_admin_mcp`'s own discovery-layer server -- raw,
+    ungated dispatch; logging/approval-gating and enable/disable both moved
+    to that single proxy layer. `_list_tools` no longer filters by the old
+    curated `hidden` field either -- always both tools, unfiltered."""
     client = ElasticsearchLogsClient.from_env()
     server: Server = Server("cmp-logs")
+
+    curated = _curated_annotations()
 
     @server.list_tools()
     async def _list_tools() -> list[types.Tool]:
         return [
             types.Tool(
-                name=_SEARCH_LOGS,
-                description=_SEARCH_LOGS_DESCRIPTION,
-                inputSchema=_SEARCH_LOGS_SCHEMA,
-                annotations=_READ_ONLY_ANNOTATIONS,
-            ),
-            types.Tool(
-                name=_FOLLOW_REQUEST_ID,
-                description=_FOLLOW_REQUEST_ID_DESCRIPTION,
-                inputSchema=_FOLLOW_REQUEST_ID_SCHEMA,
-                annotations=_READ_ONLY_ANNOTATIONS,
-            ),
+                name=name,
+                description=description,
+                inputSchema=schema,
+                annotations=_tool_annotations(name, curated),
+            )
+            for name, description, schema in _TOOL_DEFS
         ]
 
     @server.call_tool()
     async def _call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        async def _dispatch() -> dict[str, Any]:
-            if tool_name == _SEARCH_LOGS:
-                status = arguments.get("status")
-                return client.search(
-                    query=arguments.get("query"),
-                    level=arguments.get("level"),
-                    exclude_level=arguments.get("exclude_level"),
-                    logger=arguments.get("logger"),
-                    request_id=arguments.get("request_id"),
-                    method=arguments.get("method"),
-                    status=int(status) if status is not None else None,
-                    path_prefix=arguments.get("path_prefix"),
-                    hostname=arguments.get("hostname"),
-                    since=arguments.get("since"),
-                    until=arguments.get("until"),
-                    exclude_known_noise=bool(arguments.get("exclude_known_noise", False)),
-                    max_results=int(arguments.get("max_results", 100)),
-                )
-            if tool_name == _FOLLOW_REQUEST_ID:
-                return client.follow_request_id(
-                    request_id=arguments["request_id"],
-                    max_results=int(arguments.get("max_results", 200)),
-                )
-            return {"error": "unknown_tool", "tool": tool_name}
-
-        return await instrument_dispatch(
-            server=server.name,
-            kind="tool",
-            name=tool_name,
-            arguments=arguments,
-            source=f"{server.name}.tool.{tool_name}",
-            dispatch=_dispatch,
-            action=(
-                f"POST {client.base_url}/{client.index}/_search"
-                if client.base_url and client.index
-                else None
-            ),
-        )
+        if tool_name == _SEARCH_LOGS:
+            status = arguments.get("status")
+            return client.search(
+                query=arguments.get("query"),
+                level=arguments.get("level"),
+                exclude_level=arguments.get("exclude_level"),
+                logger=arguments.get("logger"),
+                request_id=arguments.get("request_id"),
+                method=arguments.get("method"),
+                status=int(status) if status is not None else None,
+                path_prefix=arguments.get("path_prefix"),
+                hostname=arguments.get("hostname"),
+                since=arguments.get("since"),
+                until=arguments.get("until"),
+                exclude_known_noise=bool(arguments.get("exclude_known_noise", False)),
+                max_results=int(arguments.get("max_results", 100)),
+            )
+        if tool_name == _FOLLOW_REQUEST_ID:
+            return client.follow_request_id(
+                request_id=arguments["request_id"],
+                max_results=int(arguments.get("max_results", 200)),
+            )
+        return {"error": "unknown_tool", "tool": tool_name}
 
     return server
 

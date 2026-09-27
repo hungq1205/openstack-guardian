@@ -1,15 +1,17 @@
 """Tests for the cmp-admin cutover itself: `build_admin_server`/`main.py`
-wiring every piece built in the earlier migration steps -- tools (including
-the progressive-discovery pinned set, search_tools/get_tool_schema, the
-search_failure_patterns extra tool, and the start_investigate/
-submit_investigation_plan/submit_investigation_report extra tools), resource
-templates, and the assemble_log prompt -- onto one real Server instance,
-plus the legacy get_volume_legacy opt-in this server now owns.
+wiring every piece built in the earlier migration steps -- tools
+(search_tools/get_tool_schema plus every real operation, all unfiltered
+now, see `test_tool_discovery.py`) onto one real Server instance, plus the
+legacy get_volume_legacy opt-in this server now owns. cmp-admin has no
+extra (non-OpenAPI) tools left as of 2026-09-14 -- the ticket/plan/report/
+acknowledge tools and search_failure_patterns both moved to guardian-admin
+(see `guardian-platform/tests/test_admin_mcp.py`). MCP resources and the
+assemble_log prompt were dropped project-wide 2026-09-26 -- this server no
+longer serves either (see the top-level workspace CLAUDE.md).
 
 The deep-dive behavioral coverage for each piece already lives in its own
-test module (test_admin_server_merge.py, test_tool_discovery.py,
-test_failure_patterns.py, test_admin_resources.py, test_prompts.py); this
-file only proves the assembly in main.py actually wires them together.
+test module (test_admin_server_merge.py, test_tool_discovery.py); this file
+only proves the assembly in main.py actually wires them together.
 """
 
 from __future__ import annotations
@@ -27,14 +29,6 @@ _PINNED_TOOLS = {
     "list_compute_nodes",
 }
 _META_TOOLS = {"search_tools", "get_tool_schema"}
-_RESOURCE_URI_TEMPLATES = {
-    "cmp://compute-node/{compute_id}",
-    "cmp://host-aggregate/{aggregate_id}",
-    "cmp://server-compute-node/{server_id}",
-    "cmp://elastic-ip/{elastic_ip_id}",
-    "cmp://private-ip/{private_ip_id}",
-    "cmp://runbook/{pattern_id}",
-}
 
 
 @pytest.fixture(autouse=True)
@@ -65,11 +59,14 @@ def test_legacy_volume_get_opts_in_via_env_var(monkeypatch: pytest.MonkeyPatch) 
     assert extra["get_volume_legacy"].path == "/admin-api/volumes/{volume_id}/"
 
 
-_INVESTIGATION_REPORTING_TOOLS = {"start_investigate", "submit_investigation_plan", "submit_investigation_report"}
-
-
 @pytest.mark.asyncio
-async def test_build_admin_server_lists_pinned_tools_plus_meta_plus_failure_patterns() -> None:
+async def test_build_admin_server_lists_every_operation_plus_meta() -> None:
+    """The 4 ticket/plan/report/acknowledge tools and search_failure_patterns
+    that used to also show up here all moved to the guardian-admin server
+    (2026-09-14) -- see `guardian-platform/tests/test_admin_mcp.py`. cmp-admin
+    now has zero extra (non-OpenAPI) tools. `list_tools()` itself no longer
+    filters by the old curated `hidden` field (2026-09-26) -- every real
+    operation is listed, not just the previously-"pinned" subset."""
     from mcp.shared.memory import create_connected_server_and_client_session
 
     server = build_admin_server()
@@ -77,9 +74,10 @@ async def test_build_admin_server_lists_pinned_tools_plus_meta_plus_failure_patt
     async with create_connected_server_and_client_session(server) as session:
         tools = await session.list_tools()
 
-    assert {t.name for t in tools.tools} == (
-        _PINNED_TOOLS | _META_TOOLS | {"search_failure_patterns"} | _INVESTIGATION_REPORTING_TOOLS
-    )
+    names = {t.name for t in tools.tools}
+    assert _PINNED_TOOLS <= names
+    assert _META_TOOLS <= names
+    assert len(names) == 104 + len(_META_TOOLS)
 
 
 @pytest.mark.asyncio
@@ -109,8 +107,8 @@ async def test_build_admin_server_every_real_operation_is_still_callable(
     Many of these operations are approval-gated action calls -- bypassing
     the wait here keeps this test about existence/dispatchability, not
     approval (see test_shared_telemetry.py for that behavior itself)."""
+    from guardian_platform import telemetry
     from mcp.shared.memory import create_connected_server_and_client_session
-    from mcp_servers.shared import telemetry
 
     async def _auto_approve(_event_id: int) -> str:
         return "approved"
@@ -131,36 +129,10 @@ async def test_build_admin_server_every_real_operation_is_still_callable(
 
 
 @pytest.mark.asyncio
-async def test_build_admin_server_exposes_all_six_resource_templates() -> None:
-    from mcp.shared.memory import create_connected_server_and_client_session
-
-    server = build_admin_server()
-
-    async with create_connected_server_and_client_session(server) as session:
-        resources = await session.list_resources()
-        templates = await session.list_resource_templates()
-
-    assert resources.resources == []
-    assert {t.uriTemplate for t in templates.resourceTemplates} == _RESOURCE_URI_TEMPLATES
-
-
-@pytest.mark.asyncio
-async def test_build_admin_server_exposes_assemble_log_prompt() -> None:
-    from mcp.shared.memory import create_connected_server_and_client_session
-
-    server = build_admin_server()
-
-    async with create_connected_server_and_client_session(server) as session:
-        prompts = await session.list_prompts()
-
-    assert [p.name for p in prompts.prompts] == ["assemble_log"]
-
-
-@pytest.mark.asyncio
 async def test_real_round_trip_through_the_live_mcp_subprocess() -> None:
     """The same live-subprocess proof every other server here uses: genuinely
     spawn `python -m mcp_servers.cmp_admin_mcp.main` (the exact command
-    `.mcp.json` runs) and get real responses back over the real protocol."""
+    `.mcp.json` runs) and get a real response back over the real protocol."""
     import sys
 
     from mcp import ClientSession, StdioServerParameters
@@ -175,14 +147,6 @@ async def test_real_round_trip_through_the_live_mcp_subprocess() -> None:
     ):
         await session.initialize()
         tools = await session.list_tools()
-        resources = await session.list_resource_templates()
-        prompts = await session.list_prompts()
 
     tool_names = {t.name for t in tools.tools}
-    # Check that the meta-tools and search_failure_patterns are present
-    assert _META_TOOLS | {"search_failure_patterns"} <= tool_names
-    # Check that resources include the runbook at least
-    resource_templates = {t.uriTemplate for t in resources.resourceTemplates}
-    assert "cmp://runbook/{pattern_id}" in resource_templates
-    # Check prompt is present
-    assert [p.name for p in prompts.prompts] == ["assemble_log"]
+    assert _META_TOOLS <= tool_names

@@ -22,8 +22,21 @@ Then point `cmp_logs_mcp` at it:
 
 ```bash
 export CMP_LOGS_ES_URL=http://localhost:9200
-export CMP_LOGS_ES_INDEX=iaas-api-2026.08.23
+export CMP_LOGS_ES_INDEX=iaas-api-*
 ```
+
+A second day, `mock-logs-22.csv`, seeds the same way into its own dated index:
+
+```bash
+python seed.py --index iaas-api-2026.08.22 --csv mock-logs-22.csv
+```
+
+Guardian's own `cmp-logs` connection (admin GUI's MCP Servers page) uses the wildcard
+`iaas-api-*` rather than one literal dated index, precisely so both days are visible at once --
+`{base_url}/{index}/_search` is a real Elasticsearch multi-index search when `index` is a
+pattern, same convention `openstack-logs`' `OS_LOGS_ES_INDEX_PATTERN=flog-*` already uses. Seed a
+3rd day the same way (its own `--index iaas-api-2026.08.<day>`) and it joins the same pattern with
+no config change.
 
 ## GUI (Kibana)
 
@@ -50,6 +63,17 @@ ERROR: a request for a volume UUID that doesn't exist
 (`cinderclient.exceptions.NotFound`, HTTP 404), whose gateway correlation id
 (`df3daa616eb14781866673d4c67d062e`) ties together an INFO access-log line, a
 WARNING, and the ERROR itself.
+
+`mock-logs-22.csv` is the previous day's equivalent export (`2026-08-22`,
+14,846 rows) -- same shape, same one `cinderclient.exceptions.NotFound`
+ERROR (different request id, same missing volume UUID). Its only purpose is
+**noise**: real-looking background traffic around the mock CMP server's own
+scripted incidents (`mock/cmp_server/`, its 3 `ERROR celery.server_creator
+...` scenarios) so an agent searching cmp-logs sees a realistic haystack --
+tens of thousands of ordinary access-log lines and deprecation warnings, not
+an index that suspiciously contains only the incident being investigated.
+Both days combined (plus whatever the mock CMP server has logged) is what
+`iaas-api-*` actually searches.
 
 `seed.py` parses the raw `log` text into structured fields
 (`level`/`logger`/`request_id`/`method`/`path`/`status`/`duration_ms`/

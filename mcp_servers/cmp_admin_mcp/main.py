@@ -1,8 +1,30 @@
 """Entry point for cmp-admin: every CMP admin-v2 server/network/block-storage
-operation, the curated failure-pattern knowledge base, resource templates,
-the assemble_log prompt, and the ticket/plan/report tools
-(investigation_reporting.py), merged onto one Server instance under one
-shared credential set.
+operation, merged onto one Server instance under one shared credential set.
+
+Piped through `guardian-admin` as a proxied external connection now
+(2026-09-26, see the top-level workspace CLAUDE.md's "proxy-gateway"
+notes) -- dispatch logging/approval-gating and enable/disable both moved
+to that single layer (`guardian_platform.admin_mcp.proxy`, `config_store`'s
+unified tool registry), so this server's own dispatch (in
+`openapi_bridge._register_discovery_tool_handlers`) is a raw, ungated pass-
+through. MCP resources and the `assemble_log` prompt were dropped the same
+day -- every resource this server used to serve was already backed by a
+plain callable tool (just excluded from default `list_tools()` output,
+which no longer filters that way either), except `cmp://runbook/
+{pattern_id}`, which has no tool replacement (use `search_failure_patterns`
+instead -- a free-text signature match, not a by-id lookup, but sufficient
+for this workspace's needs).
+
+The ticket/plan/report/notify tools that used to live here
+(investigation_reporting.py) and the curated failure-pattern knowledge base
+(failure_pattern_matcher.py) both moved to the `guardian-admin` MCP server
+(2026-09-14) -- neither was actually CMP-specific, just historically bolted
+on here since cmp-admin was the only MCP with an approval-gating dispatch
+layer at the time (ticketing), or just physically nested in the one MCP
+project that happened to build it first (the KB, which already spans both
+CMP-level and core-level failure patterns). See
+`guardian-platform/src/guardian_platform/admin_mcp/` and
+`guardian_platform/failure_patterns.py`.
 
 Configure via env vars: CMP_ADMIN_V2_BASE_URL, plus either CMP_ADMIN_V2_PAT
 or CMP_ADMIN_V2_USERNAME/CMP_ADMIN_V2_PASSWORD. Run with `uv run python -m
@@ -18,35 +40,17 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
+from guardian_platform.config_store import get_spec_sources, get_tool_annotation_overrides
 from mcp.server.lowlevel import Server
 
-from mcp_servers.cmp_admin_mcp.failure_pattern_matcher import build_search_failure_patterns_tool
-from mcp_servers.cmp_admin_mcp.investigation_reporting import (
-    build_start_investigate_tool,
-    build_submit_investigation_plan_tool,
-    build_submit_investigation_report_tool,
-)
 from mcp_servers.cmp_admin_mcp.legacy_operations import LEGACY_OPERATIONS
-from mcp_servers.cmp_admin_mcp.resources import build_resource_templates
 from mcp_servers.openapi_bridge import (
-    CmpApiClient,
+    ExtraTool,
     OperationSpec,
     SpecSource,
-    ToolAnnotation,
-    annotations_for,
     build_multi_spec_server,
-    load_annotations,
-    merge_operations,
-    register_resource_templates,
     run_stdio,
-)
-from mcp_servers.prompts import register_prompts
-from mcp_servers.shared.config_store import (
-    get_annotation_overrides,
-    get_pinned_overrides,
-    get_spec_sources,
 )
 
 _SPECS_DIR = Path(__file__).resolve().parent.parent / "specs"
@@ -139,124 +143,28 @@ def sources() -> list[SpecSource]:
     return result + extras
 
 
+def _extra_tools() -> list[ExtraTool]:
+    """Hand-built (non-OpenAPI) tools this server bolts on -- currently none.
+    `search_failure_patterns`, the last one, moved to `guardian-admin`
+    (2026-09-14, see `guardian_platform.failure_patterns`) since it was never
+    actually CMP-specific. Kept as its own function (rather than removed
+    outright) so the catalog functions below can list whatever's here --
+    with its own curated `annotation` -- alongside the OpenAPI-backed
+    operations, rather than `all_operations_with_visibility()`'s "full
+    catalog" silently meaning "full *OpenAPI* catalog only", if a genuinely
+    CMP-specific extra tool ever gets added here again."""
+    return []
+
+
 def build_admin_server() -> Server:
     the_sources = sources()
-    server = build_multi_spec_server(
+    return build_multi_spec_server(
         "cmp-admin",
         the_sources,
         env_prefix=_ENV_PREFIX,
-        extra_tools=[
-            build_search_failure_patterns_tool(),
-            build_start_investigate_tool(),
-            build_submit_investigation_plan_tool(),
-            build_submit_investigation_report_tool(),
-        ],
-        pinned_overrides=get_pinned_overrides(),
+        extra_tools=_extra_tools(),
+        annotation_overrides=get_tool_annotation_overrides("cmp-admin"),
     )
-    operations = merge_operations(the_sources)
-    annotations: dict[str, ToolAnnotation] = {}
-    for source in the_sources:
-        if source.annotations_path is not None:
-            annotations.update(load_annotations(source.annotations_path))
-    client = CmpApiClient.from_env(_ENV_PREFIX)
-    register_resource_templates(server, build_resource_templates(operations, annotations, client))
-    register_prompts(server)
-    return server
-
-
-def all_operations_with_pinned_state() -> list[dict[str, Any]]:
-    """The full merged operation catalog (not the discovery-filtered subset
-    `list_tools()` returns), each with its current effective `pinned` state --
-    the data the admin GUI's pinned-tools toggle page needs. An override in
-    the config store wins; otherwise the curated annotation's own `pinned`
-    field; otherwise `False`, same precedence `build_admin_server` itself
-    applies via `pinned_overrides`.
-    """
-    the_sources = sources()
-    operations = merge_operations(the_sources)
-    annotations: dict[str, ToolAnnotation] = {}
-    for source in the_sources:
-        if source.annotations_path is not None:
-            annotations.update(load_annotations(source.annotations_path))
-    pinned_overrides = get_pinned_overrides()
-    annotation_overrides = get_annotation_overrides()
-
-    catalog = []
-    for operation_id, op in sorted(operations.items()):
-        curated = _effective_annotation(annotations.get(operation_id), annotation_overrides.get(operation_id))
-        hints = annotations_for(op, curated)
-        pinned = pinned_overrides.get(operation_id, curated.pinned if curated is not None else False)
-        catalog.append(
-            {
-                "operation_id": operation_id,
-                "summary": op.summary,
-                "category": curated.tool_category if curated else None,
-                "risk_level": curated.risk_level if curated else None,
-                "read_only": bool(hints.readOnlyHint),
-                "destructive": bool(hints.destructiveHint),
-                "pinned": pinned,
-            }
-        )
-    return catalog
-
-
-def _effective_annotation(
-    curated: ToolAnnotation | None, override: dict[str, Any] | None
-) -> ToolAnnotation | None:
-    """A GUI edit (`annotation_overrides`) layered field-by-field over the
-    curated JSON annotation -- an edit to one field never wipes the others,
-    whether they came from the JSON file or an earlier edit."""
-    if not override:
-        return curated
-    base = curated.__dict__ if curated is not None else {}
-    merged = {**base, **override}
-    if "preconditions" in merged and isinstance(merged["preconditions"], list):
-        merged["preconditions"] = tuple(merged["preconditions"])
-    if "related_tools" in merged and isinstance(merged["related_tools"], list):
-        merged["related_tools"] = tuple(merged["related_tools"])
-    return ToolAnnotation(**merged)
-
-
-def operation_detail(operation_id: str) -> dict[str, Any] | None:
-    """Everything known about one operation -- full spec (parameters, body/
-    output schema) plus the curated annotation with any GUI edit applied --
-    for the catalog page's click-through detail/edit view. `None` if no such
-    operation exists in the current merged catalog."""
-    the_sources = sources()
-    operations = merge_operations(the_sources)
-    op = operations.get(operation_id)
-    if op is None:
-        return None
-    annotations: dict[str, ToolAnnotation] = {}
-    for source in the_sources:
-        if source.annotations_path is not None:
-            annotations.update(load_annotations(source.annotations_path))
-    curated = _effective_annotation(annotations.get(operation_id), get_annotation_overrides().get(operation_id))
-    hints = annotations_for(op, curated)
-    pinned = get_pinned_overrides().get(operation_id, curated.pinned if curated is not None else False)
-    return {
-        "operation_id": op.operation_id,
-        "method": op.method,
-        "path": op.path,
-        "summary": op.summary,
-        "description": op.description,
-        "parameters": [
-            {"name": p.name, "location": p.location, "required": p.required, "schema": p.schema}
-            for p in op.parameters
-        ],
-        "body_schema": op.body_schema,
-        "body_required": op.body_required,
-        "output_schema": op.output_schema,
-        "usage_note": curated.usage_note if curated else "",
-        "category": curated.tool_category if curated else None,
-        "risk_level": curated.risk_level if curated else None,
-        "preconditions": list(curated.preconditions) if curated else [],
-        "related_tools": list(curated.related_tools) if curated else [],
-        "read_only": bool(hints.readOnlyHint),
-        "destructive": bool(hints.destructiveHint),
-        "idempotent": hints.idempotentHint,
-        "pinned": pinned,
-    }
 
 
 def main() -> None:

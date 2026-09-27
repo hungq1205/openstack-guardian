@@ -40,8 +40,8 @@ async def test_merging_all_three_specs_yields_every_real_operation(
     Many of these 104 operations are approval-gated action calls (see
     test_shared_telemetry.py for that behavior itself) -- bypassing the wait
     here keeps this test about existence/dispatchability, not approval."""
+    from guardian_platform import telemetry
     from mcp.shared.memory import create_connected_server_and_client_session
-    from mcp_servers.shared import telemetry
 
     async def _auto_approve(_event_id: int) -> str:
         return "approved"

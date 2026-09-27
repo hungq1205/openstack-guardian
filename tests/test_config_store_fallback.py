@@ -1,21 +1,24 @@
 """Tests for the config-store fallback added to `CmpApiClient.from_env`,
-`ElasticsearchLogsClient.from_env`, `NotifyClient.from_env`, and
-`cmp_admin_mcp.main._sources()`/`build_admin_server()`'s pinned-override
-overlay -- proving env vars still win when set, the config store fills in
-when they're not, and defaults are unchanged when nothing is configured at
-all (the zero-behavior-change guarantee the migration plan requires).
+`ElasticsearchLogsClient.from_env`, and `cmp_admin_mcp.main._sources()`/
+`build_admin_server()`'s pinned-override overlay -- proving env vars still
+win when set, the config store fills in when they're not, and defaults are
+unchanged when nothing is configured at all (the zero-behavior-change
+guarantee the migration plan requires).
+
+No `guardian-admin` coverage here -- `notify_admin` has no outbound call or
+connection config of any kind to fall back on (see `guardian_platform.
+admin_mcp.server`'s module docstring).
 """
 
 from __future__ import annotations
 
 import pytest
+from guardian_platform import config_store
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from mcp_servers.cmp_admin_mcp.main import build_admin_server
 from mcp_servers.cmp_logs_mcp.client import ElasticsearchLogsClient
-from mcp_servers.cmp_notify_mcp.client import NotifyClient
 from mcp_servers.openapi_bridge import CmpApiClient
-from mcp_servers.shared import config_store
 
 _ADMIN_ENV_VARS = (
     "CMP_ADMIN_V2_BASE_URL",
@@ -34,7 +37,7 @@ _LOGS_ENV_VARS = (
 
 @pytest.fixture(autouse=True)
 def _clean_real_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in (*_ADMIN_ENV_VARS, *_LOGS_ENV_VARS, "CMP_NOTIFY_WEBHOOK_URL"):
+    for var in (*_ADMIN_ENV_VARS, *_LOGS_ENV_VARS):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -69,16 +72,6 @@ def test_elasticsearch_client_falls_back_to_config_store() -> None:
     client = ElasticsearchLogsClient.from_env()
     assert client.base_url == "https://es.example.com"
     assert client.index == "logs-*"
-
-
-def test_notify_client_falls_back_to_config_store() -> None:
-    config_store.set_connection_config("CMP_NOTIFY", {"webhook_url": "https://hooks.example.com/x"})
-    client = NotifyClient.from_env()
-    assert client.webhook_url == "https://hooks.example.com/x"
-
-
-def test_notify_client_default_is_unchanged_when_nothing_is_configured() -> None:
-    assert NotifyClient.from_env().webhook_url == ""
 
 
 @pytest.mark.asyncio
@@ -158,15 +151,19 @@ def test_sources_disabled_domain_is_dropped_entirely(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_admin_server_applies_pinned_overrides() -> None:
-    # Use delete_server (action tool, not pinned by default) and rebuild_server (action tool, pinned by default)
-    config_store.set_pinned_override("delete_server", True)
-    config_store.set_pinned_override("rebuild_server", False)
+async def test_admin_server_hidden_override_no_longer_affects_listing() -> None:
+    """2026-09-26: cmp-admin is piped through `guardian-admin` as a proxied
+    external connection now -- enable/disable is the unified tool registry's
+    job, applied one layer up by `guardian_platform.admin_mcp.proxy`, not by
+    this server's own `list_tools()`. The old curated `hidden` override has
+    no effect here anymore: both tools list regardless."""
+    config_store.set_tool_annotation_override("cmp-admin", "delete_server", {"hidden": False})
+    config_store.set_tool_annotation_override("cmp-admin", "rebuild_server", {"hidden": True})
 
     server = build_admin_server()
     async with create_connected_server_and_client_session(server) as session:
         tools = await session.list_tools()
 
     names = {t.name for t in tools.tools}
-    assert "delete_server" in names  # pinned via override
-    assert "rebuild_server" not in names  # unpinned via override
+    assert "delete_server" in names
+    assert "rebuild_server" in names

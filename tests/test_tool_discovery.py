@@ -1,8 +1,12 @@
-"""Tests for progressive tool discovery on the merged multi-spec server:
-`list_tools` returns only the curated `pinned` subset plus the
-`search_tools`/`get_tool_schema` meta-tools, while `call_tool` keeps
-dispatching to any real operation by exact name -- the empirical regression
-the whole design rests on.
+"""Tests for tool discovery on the merged multi-spec server: `search_tools`/
+`get_tool_schema` let an agent find/inspect a specific operation by keyword
+or exact name. `list_tools` itself no longer filters by the old curated
+`hidden` field (removed 2026-09-26 -- this server is piped through
+`guardian-admin` as a proxied external connection now, and enable/disable is
+the unified tool registry's job, applied one layer up by
+`guardian_platform.admin_mcp.proxy`) -- it returns every real operation plus
+the 2 meta-tools, unfiltered. `call_tool` keeps dispatching to any real
+operation by exact name regardless.
 """
 
 from __future__ import annotations
@@ -49,27 +53,57 @@ def _merged_annotations() -> dict[str, ToolAnnotation]:
 
 
 @pytest.mark.asyncio
-async def test_list_tools_returns_only_pinned_operations_plus_meta_tools() -> None:
+async def test_list_tools_returns_every_operation_plus_meta_tools() -> None:
     from mcp.shared.memory import create_connected_server_and_client_session
 
     server = _build_admin_server("TEST_DISCOVERY_LIST")
     async with create_connected_server_and_client_session(server) as session:
         tools = await session.list_tools()
 
-    assert {t.name for t in tools.tools} == _PINNED_WITHOUT_LEGACY | _META_TOOLS
+    names = {t.name for t in tools.tools}
+    assert _PINNED_WITHOUT_LEGACY <= names
+    assert _META_TOOLS <= names
+    assert "list_server_types" in names  # a real, non-"pinned" operation -- no longer excluded
+    assert len(names) == 104 + len(_META_TOOLS)
+
+
+@pytest.mark.asyncio
+async def test_zero_curation_operations_default_to_visible() -> None:
+    """Inverts test_list_tools_returns_only_pinned_operations_plus_meta_tools:
+    a spec source with *no* annotations file at all -- not merely an
+    operation missing its own entry in an existing file, but no curation
+    source whatsoever -- now defaults every operation to visible under the
+    opt-out `hidden` model. This is the exact opposite of the old opt-in
+    `pinned` default, and the single highest-risk regression the
+    pinned->hidden migration could have caused if a curated JSON file (or a
+    tool_annotation_overrides row) were ever missing --
+    see mcp_servers/cmp_admin_mcp/migrations/backfill_tool_visibility.py."""
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    uncurated_source = SpecSource(_SPECS_DIR / "network.json")  # no annotations_path at all
+    server = build_multi_spec_server(
+        "cmp-admin", [uncurated_source], env_prefix="TEST_DISCOVERY_ZERO_CURATION"
+    )
+    async with create_connected_server_and_client_session(server) as session:
+        tools = await session.list_tools()
+
+    names = {t.name for t in tools.tools}
+    # Every network.json operation is visible, not a curated-down subset.
+    assert len(names) > 20
+    assert "create_floating_ip" in names
 
 
 @pytest.mark.asyncio
 async def test_pinned_annotation_on_an_operation_absent_from_this_build_is_inert() -> None:
-    """get_volume_legacy is pinned in annotations/block_storage.json, but this
-    server build never wires it in as an operation -- it's opt-in via
+    """get_volume_legacy is visible (hidden=False) in annotations/block_storage.json,
+    but this server build never wires it in as an operation -- it's opt-in via
     CMP_ADMIN_V2_ENABLE_LEGACY_VOLUME_GET, resolved at the cmp-admin
-    cutover, not by build_multi_spec_server itself. A pinned flag on an
-    operation that isn't part of the server has nothing to pin."""
+    cutover, not by build_multi_spec_server itself. A visibility flag on an
+    operation that isn't part of the server has nothing to show."""
     from mcp.shared.memory import create_connected_server_and_client_session
 
     annotations = load_annotations(_BLOCK_STORAGE_ANNOTATIONS)
-    assert annotations["get_volume_legacy"].pinned is True
+    assert annotations["get_volume_legacy"].hidden is False
 
     server = _build_admin_server("TEST_DISCOVERY_LEGACY_ABSENT")
     async with create_connected_server_and_client_session(server) as session:
@@ -79,10 +113,12 @@ async def test_pinned_annotation_on_an_operation_absent_from_this_build_is_inert
 
 
 @pytest.mark.asyncio
-async def test_get_volume_legacy_is_pinned_once_wired_into_a_server_build() -> None:
+async def test_get_volume_legacy_appears_once_wired_into_a_server_build() -> None:
     """Once the legacy operation is actually part of the operation set (as it
     will be for cmp-admin whenever CMP_ADMIN_V2_ENABLE_LEGACY_VOLUME_GET
-    is set), its pinned flag takes effect like any other operation's."""
+    is set), it shows up in `list_tools()` like any other real operation --
+    the previous test proves it's genuinely absent when not wired in at all,
+    unrelated to any visibility flag."""
     from mcp.shared.memory import create_connected_server_and_client_session
 
     sources = [
@@ -99,22 +135,17 @@ async def test_get_volume_legacy_is_pinned_once_wired_into_a_server_build() -> N
     async with create_connected_server_and_client_session(server) as session:
         tools = await session.list_tools()
 
-    assert {t.name for t in tools.tools} == _PINNED_WITHOUT_LEGACY | _META_TOOLS | {
-        "get_volume_legacy"
-    }
+    assert "get_volume_legacy" in {t.name for t in tools.tools}
 
 
 @pytest.mark.asyncio
-async def test_non_pinned_tool_is_still_callable_via_call_tool() -> None:
-    """The whole point of progressive discovery: unlisted is not uncallable.
-    list_server_types is a real, unpinned operation."""
+async def test_non_pinned_tool_is_callable_via_call_tool() -> None:
+    """list_server_types is real and callable by exact name regardless of
+    whether an admin has ever curated an annotation for it."""
     from mcp.shared.memory import create_connected_server_and_client_session
 
     server = _build_admin_server("TEST_DISCOVERY_CALL_UNLISTED")
     async with create_connected_server_and_client_session(server) as session:
-        tools = await session.list_tools()
-        assert "list_server_types" not in {t.name for t in tools.tools}
-
         result = await session.call_tool("list_server_types", {})
 
     assert result.isError is False

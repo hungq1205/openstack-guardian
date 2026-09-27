@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 import pytest
+from guardian_platform.config_store import set_tool_annotation_override
 
 from mcp_servers.cmp_logs_mcp.client import ElasticsearchLogsClient
 from mcp_servers.cmp_logs_mcp.mask import mask_text, mask_value
@@ -433,6 +434,25 @@ async def test_list_tools_declares_both_tools_as_read_only() -> None:
         assert tool.annotations is not None
         assert tool.annotations.readOnlyHint is True
         assert tool.annotations.destructiveHint is False
+
+
+@pytest.mark.asyncio
+async def test_hidden_override_no_longer_affects_list_tools() -> None:
+    """2026-09-26: this server is piped through `guardian-admin` as a proxied
+    external connection now -- enable/disable is the unified tool registry's
+    job, applied one layer up by `guardian_platform.admin_mcp.proxy`, not by
+    this server's own `list_tools()`. The old curated `hidden` field has no
+    effect here anymore (unlike before): both tools always list."""
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    set_tool_annotation_override("cmp-logs", "follow_request_id", {"hidden": True})
+
+    server = build_server()
+    async with create_connected_server_and_client_session(server) as session:
+        result = await session.list_tools()
+
+    names = {tool.name for tool in result.tools}
+    assert names == {"search_logs", "follow_request_id"}
 
 
 @pytest.mark.asyncio

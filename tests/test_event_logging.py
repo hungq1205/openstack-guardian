@@ -1,29 +1,47 @@
-"""End-to-end proof that the six instrumentation call sites wired in
-`openapi_bridge.py`, `prompts/__init__.py`, `cmp_logs_mcp/server.py`, and
-`cmp_notify_mcp/server.py` actually produce `events` rows for real MCP
-protocol calls -- a tool call, a resource read, and a prompt fetch on
-cmp-admin, plus one call each on cmp-logs and cmp-notify.
+"""Proof that cmp-admin/cmp-logs no longer log their own events.
+
+2026-09-26: both servers are piped through `guardian-admin` as proxied
+external connections now (see the top-level workspace CLAUDE.md's
+"proxy-gateway" notes) -- dispatch logging/approval-gating moved entirely
+to that one layer (`guardian_platform.admin_mcp.proxy`, whose own call path
+wraps every proxied call in `instrument_dispatch` exactly once). This
+server's own `_call_tool` handlers (`openapi_bridge.py`'s
+`_register_discovery_tool_handlers`, `cmp_logs_mcp/server.py`'s own
+`_call_tool`) are now raw, ungated dispatch with no `instrument_dispatch`
+call site left at all -- calling a tool directly against a bare
+`build_admin_server()`/`build_logs_server()` (as these unit tests do, with
+no proxy in front of them) must produce zero `events` rows. This guards
+against the exact double-logging regression the whole redesign was meant
+to avoid: if an `instrument_dispatch` call ever creeps back into either
+server's own handler, a proxied call would log twice.
+
+The real end-to-end proof that logging/gating actually works once these
+servers are proxied lives in the sibling guardian-platform project:
+`tests/test_admin_mcp.py`'s proxied-tool-call tests (mocking
+`call_proxied_tool`) and `tests/test_admin_gui_mcp_servers_router.py`'s
+live-subprocess probe test prove the pipe itself; the real single-events-
+row-per-call guarantee is `guardian_platform.telemetry.instrument_dispatch`'s
+own contract, unit-tested in that project's `test_shared_telemetry.py`,
+now exercised exactly once per call -- at the proxy, not here.
 
 Unit-level coverage of `instrument_dispatch` itself (masking, error
-classification, exception re-raising, broken-sink resilience) already lives
-in `test_shared_telemetry.py`; this file only proves the wiring, not the
-helper's own behavior again.
+classification, exception re-raising, broken-sink resilience) lives in
+guardian-platform's `test_shared_telemetry.py`, not duplicated here.
 """
 
 from __future__ import annotations
 
 import pytest
+from guardian_platform import db
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from mcp_servers.cmp_admin_mcp.main import build_admin_server
 from mcp_servers.cmp_logs_mcp.server import build_server as build_logs_server
-from mcp_servers.cmp_notify_mcp.server import build_server as build_notify_server
-from mcp_servers.shared import db
 
 
 @pytest.fixture(autouse=True)
 def _clean_real_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """None of these tests should ever be able to reach a real CMP/ES/webhook
+    """None of these tests should ever be able to reach a real CMP/ES
     endpoint, regardless of what a developer's shell happens to have set."""
     for var in (
         "CMP_ADMIN_V2_BASE_URL",
@@ -36,7 +54,6 @@ def _clean_real_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "CMP_LOGS_ES_API_KEY",
         "CMP_LOGS_ES_USERNAME",
         "CMP_LOGS_ES_PASSWORD",
-        "CMP_NOTIFY_WEBHOOK_URL",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -51,123 +68,28 @@ def _events() -> list[dict[str, object]]:
 
 
 @pytest.mark.asyncio
-async def test_cmp_admin_tool_call_is_logged() -> None:
+async def test_cmp_admin_tool_call_logs_nothing_without_the_proxy_in_front() -> None:
     server = build_admin_server()
     async with create_connected_server_and_client_session(server) as session:
-        await session.call_tool("list_compute_nodes", {})
+        result = await session.call_tool("list_compute_nodes", {})
 
-    events = [e for e in _events() if e["kind"] == "tool" and e["name"] == "list_compute_nodes"]
-    assert len(events) == 1
-    assert events[0]["server"] == "cmp-admin"
-    assert events[0]["status"] == "error"  # not_configured, no base URL in tests
-    assert events[0]["action"] is not None
-    assert events[0]["action"].startswith("GET ")
+    assert result.isError is False  # not_configured, no base URL in tests -- but still dispatched
+    assert _events() == []
 
 
 @pytest.mark.asyncio
-async def test_cmp_admin_resource_read_is_logged() -> None:
-    server = build_admin_server()
-    async with create_connected_server_and_client_session(server) as session:
-        await session.read_resource("cmp://compute-node/abc-123")  # type: ignore[arg-type]
-
-    events = [e for e in _events() if e["kind"] == "resource"]
-    assert len(events) == 1
-    assert events[0]["name"] == "cmp://compute-node/abc-123"
-    assert events[0]["server"] == "cmp-admin"
-    assert events[0]["action"] is not None
-    assert events[0]["action"].startswith("GET ")
-
-
-@pytest.mark.asyncio
-async def test_cmp_admin_meta_tool_call_logs_no_action() -> None:
-    """`search_tools` is a local catalog lookup, not a real endpoint call --
-    unlike a real operation, it has no `GET`/`POST ...` to show."""
+async def test_cmp_admin_meta_tool_call_logs_nothing() -> None:
     server = build_admin_server()
     async with create_connected_server_and_client_session(server) as session:
         await session.call_tool("search_tools", {"query": "server"})
 
-    events = [e for e in _events() if e["kind"] == "tool" and e["name"] == "search_tools"]
-    assert len(events) == 1
-    assert events[0]["action"] is None
+    assert _events() == []
 
 
 @pytest.mark.asyncio
-async def test_cmp_admin_runbook_resource_read_logs_no_action() -> None:
-    """The runbook resource resolves from an in-memory knowledge base, not a
-    real GET -- it should log no action, unlike an operation-backed resource."""
-    server = build_admin_server()
-    async with create_connected_server_and_client_session(server) as session:
-        await session.read_resource("cmp://runbook/volume_status_drift")  # type: ignore[arg-type]
-
-    events = [e for e in _events() if e["kind"] == "resource"]
-    assert len(events) == 1
-    assert events[0]["action"] is None
-
-
-@pytest.mark.asyncio
-async def test_cmp_admin_prompt_fetch_is_logged() -> None:
-    server = build_admin_server()
-    async with create_connected_server_and_client_session(server) as session:
-        await session.get_prompt("assemble_log", {"server_id": "srv-1"})
-
-    events = [e for e in _events() if e["kind"] == "prompt"]
-    assert len(events) == 1
-    assert events[0]["name"] == "assemble_log"
-    assert events[0]["status"] == "success"
-    assert events[0]["action"] is None  # purely local -- no real endpoint or command runs
-
-
-@pytest.mark.asyncio
-async def test_cmp_admin_unknown_prompt_still_raises_and_logs_an_error() -> None:
-    from mcp import McpError
-
-    server = build_admin_server()
-    async with create_connected_server_and_client_session(server) as session:
-        with pytest.raises(McpError):
-            await session.get_prompt("bogus_prompt", {})
-
-    events = [e for e in _events() if e["kind"] == "prompt"]
-    assert len(events) == 1
-    assert events[0]["status"] == "error"
-
-
-@pytest.mark.asyncio
-async def test_cmp_logs_search_call_is_logged() -> None:
+async def test_cmp_logs_search_call_logs_nothing() -> None:
     server = build_logs_server()
     async with create_connected_server_and_client_session(server) as session:
         await session.call_tool("search_logs", {"query": "srv-1"})
 
-    events = [e for e in _events() if e["kind"] == "tool"]
-    assert len(events) == 1
-    assert events[0]["server"] == "cmp-logs"
-    assert events[0]["name"] == "search_logs"
-    assert events[0]["status"] == "error"  # not_configured, no ES URL in tests
-    assert events[0]["action"] is None  # no ES URL/index configured in tests
-
-
-@pytest.mark.asyncio
-async def test_cmp_notify_call_is_logged(monkeypatch: pytest.MonkeyPatch) -> None:
-    """notify_admin is always approval-gated (see test_shared_telemetry.py for
-    that behavior itself) -- bypassing the wait here keeps this test focused
-    on what it's actually proving: that a real call produces a correctly
-    shaped `events` row."""
-    from mcp_servers.shared import telemetry
-
-    async def _auto_approve(_event_id: int) -> str:
-        return "approved"
-
-    monkeypatch.setattr(telemetry, "_await_decision", _auto_approve)
-
-    server = build_notify_server()
-    async with create_connected_server_and_client_session(server) as session:
-        await session.call_tool(
-            "notify_admin",
-            {"server_id": "srv-1", "root_cause": "disk full", "reasoning": "needs a human"},
-        )
-
-    events = [e for e in _events() if e["kind"] == "tool"]
-    assert len(events) == 1
-    assert events[0]["server"] == "cmp-notify"
-    assert events[0]["name"] == "notify_admin"
-    assert events[0]["status"] == "error"  # not_configured, no webhook URL in tests
-    assert events[0]["action"] is None  # no webhook URL configured in tests
+    assert _events() == []

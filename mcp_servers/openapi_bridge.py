@@ -14,22 +14,18 @@ import base64
 import json
 import logging
 import os
-import re
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
 import anyio
 import httpx
+from guardian_platform.config_store import get_config_value
+from guardian_platform.telemetry import instrument_dispatch
 from mcp import types
 from mcp.server.lowlevel import Server
-from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.stdio import stdio_server
-from pydantic import AnyUrl
-
-from mcp_servers.shared.config_store import get_config_value
-from mcp_servers.shared.telemetry import instrument_dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -89,25 +85,6 @@ def action_for_operation(op: OperationSpec) -> str:
 
 
 @dataclass(frozen=True)
-class ResourceSpec:
-    """Configuration for exposing an operation as a resource template.
-
-    A read-only operation can be exposed both ways or just as a resource,
-    eliminating redundancy. `uri_template` defines the resource URI, `id_param`
-    is the operation's parameter name to extract the id from the URI.
-    Other fields allow operation-agnostic resource construction (e.g., for
-    knowledge-base lookups, or specs with different parameter naming).
-    """
-
-    uri_template: str
-    name: str
-    description: str
-    id_param: str | None = None
-    """For operation-backed resources: the operation's id parameter name.
-    Omit for knowledge-base/custom resolvers."""
-
-
-@dataclass(frozen=True)
 class ToolAnnotation:
     """Curated, agent-facing guidance for one operation that no OpenAPI field carries.
 
@@ -115,9 +92,7 @@ class ToolAnnotation:
     an entry. Everything else falls back to the method-based hint and the
     raw spec text. `risk_level`/`tool_category` are this project's own
     vocabulary (see the design plan); `read_only`/`destructive`/`idempotent`
-    override the mechanical HTTP-method guess when set. `resource_spec` exposes
-    this read-only operation as a resource template instead of a tool,
-    eliminating redundancy.
+    override the mechanical HTTP-method guess when set.
     """
 
     usage_note: str = ""
@@ -128,14 +103,21 @@ class ToolAnnotation:
     read_only: bool | None = None
     destructive: bool | None = None
     idempotent: bool | None = None
-    pinned: bool = False
-    """True means always listed in a discovery-enabled server's `list_tools()`
-    (see `build_multi_spec_server`) -- everything else is still callable via
-    `call_tool`, just found through `search_tools`/`get_tool_schema` first."""
-    resource_spec: ResourceSpec | None = None
-    """If set, this read-only operation is exposed as a resource template
-    (via cmp://{name}/{id}) instead of a tool. The operation must be a GET
-    with a single required id-parameter (the resource id)."""
+    hidden: bool = False
+    """Opt-out visibility: `False` (the default) means always listed in a
+    discovery-enabled server's `list_tools()` (see `build_multi_spec_server`)
+    -- a rarely-needed tool an admin explicitly marks `hidden=True` is still
+    callable via `call_tool`, just found through `search_tools`/
+    `get_tool_schema` first instead of showing up unprompted. Replaces the
+    old opt-in `pinned` field (inverse polarity: `pinned=False` used to mean
+    hidden-by-default; `hidden=False` now means visible-by-default) -- see
+    `guardian_platform/db.py`'s `_migrate_legacy_overrides` for how
+    existing `pinned` data carries over."""
+    section: str | None = None
+    """Purely a display/grouping label for the admin GUI's Catalog page
+    (e.g. "system", "logs", "cmp-operations") -- a different axis from
+    `tool_category`, which still drives approval gating. Does not affect
+    which MCP server a tool is actually reachable through."""
 
 
 def load_annotations(path: Path) -> dict[str, ToolAnnotation]:
@@ -153,17 +135,8 @@ def load_annotations(path: Path) -> dict[str, ToolAnnotation]:
             read_only=entry.get("read_only"),
             destructive=entry.get("destructive"),
             idempotent=entry.get("idempotent"),
-            pinned=bool(entry.get("pinned", False)),
-            resource_spec=(
-                ResourceSpec(
-                    uri_template=rs["uri_template"],
-                    name=rs["name"],
-                    description=rs["description"],
-                    id_param=rs.get("id_param"),
-                )
-                if (rs := entry.get("resource_spec")) is not None
-                else None
-            ),
+            hidden=bool(entry.get("hidden", False)),
+            section=entry.get("section"),
         )
         for operation_id, entry in raw.items()
     }
@@ -187,6 +160,19 @@ _PAGINATION_NOTE = (
     "Supports pagination via page_size (max 100) and page_number (max 10000); "
     "check the response's count/next/previous fields to see if more results remain."
 )
+
+
+def first_sentence(text: str) -> str:
+    """First sentence of a hand-written, long-form tool description, for a
+    catalog list view's `summary` column -- for a hand-built tool (no
+    backing `OperationSpec`, so no separate short `summary` field the way an
+    OpenAPI operation has one). Safe as a plain first-period split only for
+    prose written without an earlier abbreviation/decimal period in the
+    first sentence; not a general-purpose sentence splitter. Shared by
+    `cmp_admin_mcp.main` (its 5 `ExtraTool`s) and `cmp_logs_mcp.server`
+    (its 2 hand-built tools)."""
+    first, sep, _ = text.partition(". ")
+    return first + "." if sep else first
 
 
 def description_for(op: OperationSpec, curated: ToolAnnotation | None) -> str:
@@ -352,19 +338,44 @@ def build_input_schema(op: OperationSpec) -> dict[str, Any]:
 
 def _wrap_output_schema(resolved: dict[str, Any]) -> dict[str, Any]:
     """Wrap a resolved response schema to match what `CmpApiClient.call` actually
-    returns -- `{"status_code": ..., "data": <resolved>}` on success, or
-    `{"error": ..., "message": ...}` on failure -- never the bare resolved
-    schema at the top level. Declaring `outputSchema` as the bare schema
-    would fail the SDK's own output validation on every real call, since the
+    returns -- `{"status_code": ..., "data": <resolved-or-error-body>}` on any real HTTP
+    response, or `{"error": ..., "message": ...}` only for a connection-level failure (never
+    configured, request failed -- see `CmpApiClient.call`'s own `except httpx.HTTPError`
+    branch) -- never the bare resolved schema at the top level. Declaring `outputSchema` as
+    the bare schema would fail the SDK's own output validation on every real call, since the
     real `structuredContent` is always one of these two envelopes.
+
+    `data` only has to match `resolved` when `status_code` is actually 2xx (an `if`/`then`, not
+    a bare `anyOf` -- see below for why that distinction matters): `CmpApiClient.call` wraps
+    every HTTP response the same way regardless of status code -- a real 404/400/403/401 (every
+    `server_v1` operation declares at least one, all `ErrorResponse`-shaped, e.g.
+    `{"detail": "Not found."}`) comes back in exactly the same envelope as a 200, just with
+    `data` holding the error body instead of the success one. Requiring `resolved` unconditionally
+    would (and did, live, 2026-09-27, ticket #98's `admin_api_servers_retrieve` -- a completely
+    valid 404 hitting a never-created server, the KB's own designed starting state) reject any
+    non-2xx response outright, since an `ErrorResponse` obviously doesn't validate against e.g.
+    `ServerAdminDetail`.
+
+    This is deliberately an `if`/`then` gated on `status_code`, not `data: {"anyOf": [resolved, {}]}`
+    unconditionally -- the latter was tried first and rejected: `{}` (JSON Schema's "matches
+    anything") on one `anyOf` branch makes *every* `data` value satisfy the schema regardless of
+    status code, silently accepting a broken *200* response too (missing required fields, wrong
+    types) -- exactly the class of real mock bugs a strict schema had just caught earlier the same
+    day (ticket #94/#95, missing `flavor`/`key_pair`/`enable_ipv4`/... on legitimate 200s). The
+    goal is "never spuriously reject a real error response," not "stop verifying success
+    responses" -- a 2xx still has to be shaped exactly like `resolved`; only a non-2xx status_code
+    gets a free pass on `data`'s shape, since that's genuinely CMP's own error body, not something
+    to police here.
     """
     return {
         "type": "object",
         "oneOf": [
             {
                 "type": "object",
-                "properties": {"status_code": {"type": "integer"}, "data": resolved},
+                "properties": {"status_code": {"type": "integer"}, "data": {}},
                 "required": ["status_code", "data"],
+                "if": {"properties": {"status_code": {"minimum": 200, "maximum": 299}}},
+                "then": {"properties": {"data": resolved}},
             },
             {
                 "type": "object",
@@ -504,11 +515,7 @@ def _register_tool_handlers(
 
     @server.list_tools()
     async def _list_tools() -> list[types.Tool]:
-        return [
-            _tool_for(op, annotations.get(op.operation_id))
-            for op in operations.values()
-            if (anno := annotations.get(op.operation_id)) is None or anno.resource_spec is None
-        ]
+        return [_tool_for(op, annotations.get(op.operation_id)) for op in operations.values()]
 
     @server.call_tool()
     async def _call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -618,10 +625,10 @@ def _search_tools_meta_tool() -> types.Tool:
     return types.Tool(
         name="search_tools",
         description=(
-            "Search every operation available on this server, including ones not shown by "
-            "default -- most tools here are reachable by exact name even though list_tools "
-            "only surfaces a small pinned subset. Use this first to find the right "
-            "operation_id, then get_tool_schema for its exact input shape before calling it."
+            "Search every operation available on this server, including the rarely-used "
+            "ones list_tools leaves out by default -- every operation here is reachable by "
+            "exact name regardless. Use this first to find the right operation_id, then "
+            "get_tool_schema for its exact input shape before calling it."
         ),
         inputSchema=_SEARCH_TOOLS_INPUT_SCHEMA,
         outputSchema=_SEARCH_TOOLS_OUTPUT_SCHEMA,
@@ -730,28 +737,35 @@ def _register_discovery_tool_handlers(
     client: CmpApiClient,
     extra_tools: Sequence[ExtraTool] = (),
 ) -> None:
-    """Like `_register_tool_handlers`, but `list_tools` returns only the curated
-    `pinned` subset plus any `extra_tools` plus two meta-tools (`search_tools`,
-    `get_tool_schema`) instead of every operation -- built for servers large
-    enough that dumping every tool into an agent's context by default would
-    cost more than it helps. `call_tool` still dispatches to any real
-    operation by exact name regardless of whether it was listed, so nothing
-    becomes uncallable, only unlisted by default."""
+    """Like `_register_tool_handlers`, but adds a discovery layer
+    (`search_tools`, `get_tool_schema`) alongside every real operation and
+    `extra_tools` -- built for servers large enough that a handful of
+    rarely-needed operations are worth being findable by search rather than
+    only by exact name.
+
+    2026-09-26: this server is now piped through `guardian-admin` as a
+    proxied external connection (see the top-level workspace CLAUDE.md's
+    "proxy-gateway" section) rather than reachable directly -- dispatch
+    logging/approval-gating and per-tool enable/disable both moved to that
+    single proxy layer (`guardian_platform.admin_mcp.proxy`, `config_store`'s
+    unified tool registry), so this handler is now a raw, ungated dispatch,
+    same shape `openstack-ops`/`openstack-logs` (servers this project never
+    owned the code of) always had to be. `_list_tools` no longer filters by
+    the old curated `hidden`/`resource_spec` fields either -- it returns
+    every real operation, unfiltered; enabled/disabled is the proxy's
+    registry's job now, and MCP resources were dropped project-wide the
+    same day (see `resources.py`'s own removal), so `resource_spec` no
+    longer means anything. `extra_tools`' own `requires_approval`/
+    `async_approval` flags (this server's few hand-built tools, e.g. legacy
+    operations) are also no longer honored here for the same reason -- an
+    `ExtraTool` that still needs gating should get a real `risk_level`
+    through the registry like any other tool."""
     extra_by_name = {extra.tool.name: extra for extra in extra_tools}
 
     @server.list_tools()
     async def _list_tools() -> list[types.Tool]:
-        pinned = [
-            _tool_for(op, annotations[op.operation_id])
-            for op in operations.values()
-            if (
-                annotations.get(op.operation_id) is not None
-                and annotations[op.operation_id].pinned
-                and annotations[op.operation_id].resource_spec is None
-            )
-        ]
         return [
-            *pinned,
+            *(_tool_for(op, annotations.get(op.operation_id)) for op in operations.values()),
             *(extra.tool for extra in extra_tools),
             _search_tools_meta_tool(),
             _get_tool_schema_meta_tool(),
@@ -759,37 +773,17 @@ def _register_discovery_tool_handlers(
 
     @server.call_tool()
     async def _call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        async def _dispatch() -> dict[str, Any]:
-            extra = extra_by_name.get(tool_name)
-            if extra is not None:
-                return extra.handler(arguments)
-            if tool_name == "search_tools":
-                return _run_search_tools(operations, annotations, arguments)
-            if tool_name == "get_tool_schema":
-                return _run_get_tool_schema(operations, annotations, arguments)
-            op = operations.get(tool_name)
-            if op is None:
-                return {"error": "unknown_tool", "tool": tool_name}
-            return client.call(op, arguments)
-
-        op = operations.get(tool_name)
-        curated = annotations.get(tool_name) if op is not None else None
         extra = extra_by_name.get(tool_name)
-        requires_approval = (
-            extra.requires_approval
-            if extra is not None
-            else curated is not None and curated.tool_category == "action"
-        )
-        return await instrument_dispatch(
-            server=server.name,
-            kind="tool",
-            name=tool_name,
-            arguments=arguments,
-            source=f"{server.name}.tool.{tool_name}",
-            dispatch=_dispatch,
-            action=action_for_operation(op) if op is not None else None,
-            requires_approval=requires_approval,
-        )
+        if extra is not None:
+            return extra.handler(arguments)
+        if tool_name == "search_tools":
+            return _run_search_tools(operations, annotations, arguments)
+        if tool_name == "get_tool_schema":
+            return _run_get_tool_schema(operations, annotations, arguments)
+        op = operations.get(tool_name)
+        if op is None:
+            return {"error": "unknown_tool", "tool": tool_name}
+        return client.call(op, arguments)
 
 
 def build_server(
@@ -836,9 +830,9 @@ class ExtraTool:
     receives the raw call_tool arguments and returns the result dict directly,
     the same convention every operation-backed tool follows. Always listed in
     a discovery-enabled server's `list_tools()`, same as the built-in
-    `search_tools`/`get_tool_schema` meta-tools -- there's no `pinned` flag to
-    set since there's no annotation overlay entry for something that isn't an
-    operationId.
+    `search_tools`/`get_tool_schema` meta-tools -- there's no `hidden` concept
+    for one of these, since there's no annotation overlay entry for something
+    that isn't an operationId; `list_tools()` visibility isn't optional here.
 
     Kept generic here on purpose: the bridge has no idea what "failure
     patterns" or any other domain concept means, only that some server wants
@@ -851,11 +845,26 @@ class ExtraTool:
     spec/curated annotation to derive a `tool_category` from at all, but
     still represents a real decision point an operator should see and
     approve before it resolves.
+
+    `async_approval` (only meaningful alongside `requires_approval=True`)
+    passes through to `telemetry.instrument_dispatch`'s same-named
+    parameter -- see its docstring. `submit_investigation_plan`/
+    `..._report` are the current users: their handlers have no real
+    external effect, so it's safe for `dispatch()` to run immediately while
+    the pending row itself waits for an operator's decision.
+
+    `annotation`, if set, is purely for the admin GUI's own catalog/section
+    display (e.g. `ToolAnnotation(section="system")`) -- unlike an
+    operation's own curated annotation, it plays no role in gating or
+    `list_tools()` visibility here (both already handled by the two fields
+    above and the "always listed" rule respectively).
     """
 
     tool: types.Tool
     handler: Callable[[dict[str, Any]], dict[str, Any]]
     requires_approval: bool = False
+    async_approval: bool = False
+    annotation: ToolAnnotation | None = None
 
 
 def merge_operations(sources: Sequence[SpecSource]) -> dict[str, OperationSpec]:
@@ -887,6 +896,34 @@ def merge_operations(sources: Sequence[SpecSource]) -> dict[str, OperationSpec]:
     return operations
 
 
+TOOL_ANNOTATION_FIELD_NAMES = frozenset(f.name for f in fields(ToolAnnotation))
+
+
+def apply_annotation_override(
+    curated: ToolAnnotation | None, override: Mapping[str, Any] | None
+) -> ToolAnnotation | None:
+    """Merge a sparse per-tool override dict onto a curated `ToolAnnotation`
+    (or a fresh default one if there was no curated entry at all yet).
+    `preconditions`/`related_tools` get coerced from list to tuple (JSON has
+    no tuple type of its own); unknown keys are silently dropped rather than
+    raising, so a stale or hand-edited config-store row can never crash a
+    caller. Shared by `build_multi_spec_server` (applies overrides to the
+    actual live tool set) and any caller that needs the identical merge
+    purely for display (e.g. `cmp_admin_mcp.main`'s catalog helpers) -- one
+    merge implementation, not two that could quietly drift apart.
+    """
+    if not override:
+        return curated
+    base = curated.__dict__ if curated is not None else {}
+    safe_override = {k: v for k, v in override.items() if k in TOOL_ANNOTATION_FIELD_NAMES}
+    merged = {**base, **safe_override}
+    if isinstance(merged.get("preconditions"), list):
+        merged["preconditions"] = tuple(merged["preconditions"])
+    if isinstance(merged.get("related_tools"), list):
+        merged["related_tools"] = tuple(merged["related_tools"])
+    return ToolAnnotation(**merged)
+
+
 def build_multi_spec_server(
     name: str,
     sources: Sequence[SpecSource],
@@ -894,7 +931,7 @@ def build_multi_spec_server(
     *,
     instructions: str | None = None,
     extra_tools: Sequence[ExtraTool] = (),
-    pinned_overrides: Mapping[str, bool] | None = None,
+    annotation_overrides: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> Server:
     """Build one MCP server merging every operation across multiple specs under
     one shared client/credential set.
@@ -906,162 +943,45 @@ def build_multi_spec_server(
     build_server` stays the right choice for a genuinely separate API domain.
 
     Uses progressive discovery (see `_register_discovery_tool_handlers`):
-    `list_tools` returns only operations curated as `pinned=True`, plus any
-    `extra_tools` (hand-built tools with no backing operation, e.g. a
-    knowledge-base search), plus the `search_tools`/`get_tool_schema`
-    meta-tools -- not the full merged set, which is appropriate once that set
-    is large enough (100+ operations here) that listing everything by default
-    would cost more context than it saves. Every operation and extra tool
-    stays callable by exact name regardless of pinning.
+    `list_tools` returns every operation except the ones curated as
+    `hidden=True`, plus any `extra_tools` (hand-built tools with no backing
+    operation, e.g. a knowledge-base search), plus the `search_tools`/
+    `get_tool_schema` meta-tools -- not necessarily the full merged set,
+    which is appropriate once that set is large enough (100+ operations
+    here) that listing every single one by default would cost more context
+    than it saves for the rarely-needed tail. Every operation and extra tool
+    stays callable by exact name regardless of visibility.
 
-    `pinned_overrides` lets a caller flip an operation's pinned state without
-    editing its annotations file -- a plain `{operation_id: bool}` mapping,
-    applied after the curated annotations are merged. This module has no idea
-    where such a mapping might come from (a config store, a GUI, a test); it
-    only knows how to apply one.
+    `annotation_overrides` lets a caller apply a sparse per-operation
+    `ToolAnnotation` field overlay (any of `hidden`/`section`/`risk_level`/
+    `tool_category`/`usage_note`/`preconditions`/`related_tools`/
+    `read_only`/`destructive`/`idempotent`) without editing the curated
+    annotations file -- a plain `{operation_id: {field: value, ...}}`
+    mapping, applied after the curated annotations are merged. Unknown keys
+    are silently dropped rather than raising, so a stale or hand-edited
+    config-store row can never crash server startup. This module has no
+    idea where such a mapping might come from (a config store, a GUI, a
+    test); it only knows how to apply one -- and because it's applied here,
+    to the actual live annotations dict `_register_discovery_tool_handlers`
+    uses, an override now affects what an agent really sees via
+    `list_tools()`/`get_tool_schema`, not just what a catalog UI displays.
     """
     operations = merge_operations(sources)
     annotations: dict[str, ToolAnnotation] = {}
     for source in sources:
         if source.annotations_path is not None:
             annotations.update(load_annotations(source.annotations_path))
-    for operation_id, pinned in (pinned_overrides or {}).items():
-        existing = annotations.get(operation_id)
-        annotations[operation_id] = (
-            replace(existing, pinned=pinned)
-            if existing is not None
-            else ToolAnnotation(pinned=pinned)
-        )
+    for operation_id, override_fields in (annotation_overrides or {}).items():
+        if not override_fields:
+            continue
+        merged = apply_annotation_override(annotations.get(operation_id), override_fields)
+        if merged is not None:
+            annotations[operation_id] = merged
 
     client = CmpApiClient.from_env(env_prefix)
     server: Server = Server(name, instructions=instructions)
     _register_discovery_tool_handlers(server, operations, annotations, client, extra_tools)
     return server
-
-
-_RESOURCE_URI_VARIABLE = re.compile(r"\{(\w+)\}")
-
-
-@dataclass(frozen=True)
-class ResourceTemplateSpec:
-    """One parameterized resource for `list_resource_templates`/`read_resource`.
-
-    `uri_template` must have exactly one `{variable}` segment -- every
-    resource this bridge exposes today resolves by a single id, so matching
-    and extraction stays a simple regex swap rather than a full RFC 6570
-    template engine as long as that holds; `register_resource_templates`
-    raises at registration time if a template doesn't fit this shape.
-
-    `resolver` receives the extracted id and returns the resolved record, or
-    `None` if the id doesn't resolve to anything -- generic to any backing
-    mechanism (a live API call via `operation_resolver`, an in-memory
-    knowledge-base lookup, ...).
-    """
-
-    uri_template: str
-    name: str
-    description: str
-    resolver: Callable[[str], dict[str, Any] | None]
-    mime_type: str = "application/json"
-    action: str | None = None
-    """The human-readable "what actually runs" when this resource is read --
-    an HTTP method + path for an operation-backed resolver (see
-    `operation_resolver`), `None` for a purely local resolver (e.g. the
-    runbook knowledge-base lookup). Surfaced in the events log's Action
-    column."""
-
-
-def operation_resolver(
-    op: OperationSpec, param_name: str, client: CmpApiClient
-) -> Callable[[str], dict[str, Any] | None]:
-    """Build a `ResourceTemplateSpec.resolver` that reads one resource via a
-    real, single-parameter GET operation -- the same `CmpApiClient` every
-    tool call already goes through, just addressed as a resource instead of a
-    tool call. Never actually returns `None` (a real 404 still comes back as
-    a `{"status_code": 404, ...}` dict, per `CmpApiClient.call`) -- `None` is
-    reserved for resolvers with a genuine "no such id" case, e.g. a
-    knowledge-base lookup.
-    """
-
-    def _resolve(value: str) -> dict[str, Any] | None:
-        return client.call(op, {param_name: value})
-
-    return _resolve
-
-
-def _compile_uri_template(uri_template: str) -> re.Pattern[str]:
-    variables = _RESOURCE_URI_VARIABLE.findall(uri_template)
-    if len(variables) != 1:
-        raise ValueError(f"only single-variable URI templates are supported, got {uri_template!r}")
-    placeholder_pattern = re.escape("{" + variables[0] + "}")
-    body_pattern = re.escape(uri_template).replace(placeholder_pattern, "(?P<value>[^/]+)")
-    return re.compile(f"^{body_pattern}$")
-
-
-def register_resource_templates(server: Server, specs: Sequence[ResourceTemplateSpec]) -> None:
-    """Wire `list_resources`/`list_resource_templates`/`read_resource` for a
-    fixed set of parameterized, single-variable resource templates.
-
-    `list_resources` always returns `[]` -- there are no enumerable concrete
-    resources here, only templates -- but it must still be registered: a
-    server only advertises the `resources` capability at all when
-    `ListResourcesRequest` has a registered handler (see
-    `Server.get_capabilities` in `mcp.server.lowlevel.server`), independent
-    of whether `list_resource_templates`/`read_resource` are also registered.
-    """
-    compiled = [(spec, _compile_uri_template(spec.uri_template)) for spec in specs]
-
-    @server.list_resources()
-    async def _list_resources() -> list[types.Resource]:
-        return []
-
-    @server.list_resource_templates()
-    async def _list_resource_templates() -> list[types.ResourceTemplate]:
-        return [
-            types.ResourceTemplate(
-                uriTemplate=spec.uri_template,
-                name=spec.name,
-                description=spec.description,
-                mimeType=spec.mime_type,
-            )
-            for spec in specs
-        ]
-
-    @server.read_resource()
-    async def _read_resource(uri: AnyUrl) -> Iterable[ReadResourceContents]:
-        uri_text = str(uri)
-        mime_type = "application/json"
-
-        def _matching_spec() -> ResourceTemplateSpec | None:
-            for spec, regex in compiled:
-                if regex.match(uri_text) is not None:
-                    return spec
-            return None
-
-        async def _dispatch() -> dict[str, Any]:
-            nonlocal mime_type
-            for spec, regex in compiled:
-                match = regex.match(uri_text)
-                if match is None:
-                    continue
-                mime_type = spec.mime_type
-                record = spec.resolver(match.group("value"))
-                if record is None:
-                    record = {"error": "not_found", "uri": uri_text}
-                return record
-            return {"error": "unknown_resource_uri", "uri": uri_text}
-
-        matched = _matching_spec()
-        record = await instrument_dispatch(
-            server=server.name,
-            kind="resource",
-            name=uri_text,
-            arguments={},
-            source=f"{server.name}.resource.{uri_text}",
-            dispatch=_dispatch,
-            action=matched.action if matched is not None else None,
-        )
-        return [ReadResourceContents(content=json.dumps(record), mime_type=mime_type)]
 
 
 async def _serve_stdio(server: Server) -> None:
@@ -1075,23 +995,23 @@ def run_stdio(server: Server) -> None:
 
 
 __all__ = [
+    "TOOL_ANNOTATION_FIELD_NAMES",
     "CmpApiClient",
     "ExtraTool",
     "OperationSpec",
     "ParamSpec",
-    "ResourceTemplateSpec",
     "SpecSource",
     "ToolAnnotation",
     "action_for_operation",
     "annotations_for",
+    "apply_annotation_override",
     "build_input_schema",
     "build_multi_spec_server",
     "build_server",
     "description_for",
+    "first_sentence",
     "load_annotations",
     "load_operations",
     "merge_operations",
-    "operation_resolver",
-    "register_resource_templates",
     "run_stdio",
 ]

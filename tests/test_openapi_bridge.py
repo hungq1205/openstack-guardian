@@ -14,10 +14,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import httpx
+import jsonschema
 import pytest
 
 from mcp_servers.openapi_bridge import (
     CmpApiClient,
+    _wrap_output_schema,
     build_input_schema,
     build_server,
     description_for,
@@ -27,6 +29,7 @@ from mcp_servers.openapi_bridge import (
 
 _SPECS_DIR = Path(__file__).resolve().parent.parent / "mcp_servers" / "specs"
 _SERVER_SPEC = _SPECS_DIR / "server.json"
+_SERVER_V1_SPEC = _SPECS_DIR / "server_v1.json"
 _BLOCK_STORAGE_SPEC = _SPECS_DIR / "block_storage.json"
 _NETWORK_SPEC = _SPECS_DIR / "network.json"
 
@@ -120,6 +123,38 @@ def test_load_operations_resolves_output_schema_for_a_normal_get() -> None:
 def test_bodyless_operations_have_no_output_schema(spec_path: Path, operation_id: str) -> None:
     operations = load_operations(spec_path)
     assert operations[operation_id].output_schema is None
+
+
+def test_wrapped_output_schema_accepts_a_real_non_2xx_error_response() -> None:
+    """Regression for a real bug found live 2026-09-27 (ticket #98): every `server_v1` operation
+    declares at least one 4xx response, all `ErrorResponse`-shaped (e.g. `admin_api_servers_
+    retrieve`'s 404, `{"detail": "Not found."}`) -- completely unlike its 2xx schema
+    (`ServerAdminDetail`). `CmpApiClient.call` wraps a 404 in the exact same
+    `{"status_code": ..., "data": ...}` envelope as a 200, so the wrapped outputSchema must accept
+    `data` being error-shaped whenever `status_code` isn't 2xx -- before this fix, a completely
+    valid 404 (the KB's own designed starting state for a never-created server) failed the SDK's
+    output validation outright."""
+    operations = load_operations(_SERVER_V1_SPEC)
+    resolved = operations["admin_api_servers_retrieve"].output_schema
+    assert resolved is not None
+    wrapped = _wrap_output_schema(resolved)
+
+    jsonschema.validate({"status_code": 404, "data": {"detail": "Not found."}}, wrapped)
+    jsonschema.validate({"status_code": 400, "data": {"detail": {"id": ["not a valid uuid"]}}}, wrapped)
+
+
+def test_wrapped_output_schema_still_rejects_a_malformed_2xx_response() -> None:
+    """The fix above must not become "accept literally anything" -- a 2xx response still has to
+    validate against the real success schema, so a broken 200 (missing required fields, the exact
+    class of mock bug caught live the same day, tickets #94/#95) is still caught, not silently
+    waved through just because *some* status code now gets a free pass on `data`'s shape."""
+    operations = load_operations(_SERVER_V1_SPEC)
+    resolved = operations["admin_api_servers_retrieve"].output_schema
+    assert resolved is not None
+    wrapped = _wrap_output_schema(resolved)
+
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({"status_code": 200, "data": {"id": "not-even-close-to-a-full-server"}}, wrapped)
 
 
 def test_list_server_types_output_schema_has_no_fabricated_pagination_fields() -> None:
@@ -268,14 +303,9 @@ def test_every_real_operation_has_a_curated_annotation(
 )
 def test_every_curated_annotation_has_a_usage_note(name: str, annotations_path: Path) -> None:
     """A `risk_level`/`tool_category` with no explanation is a guess wearing a
-    label -- every entry must say why, not just what. Resource-based entries
-    (with resource_spec but no tool fields) are exempt."""
+    label -- every entry must say why, not just what."""
     annotations = load_annotations(annotations_path)
-    empty = [
-        op_id
-        for op_id, entry in annotations.items()
-        if not entry.usage_note.strip() and entry.resource_spec is None
-    ]
+    empty = [op_id for op_id, entry in annotations.items() if not entry.usage_note.strip()]
     assert not empty, f"{name}: curated entries with no usage_note: {sorted(empty)}"
 
 

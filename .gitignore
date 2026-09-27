@@ -8,3 +8,5 @@ data/
 admin_gui/backend/uploads/
 admin_gui/frontend/node_modules/
 admin_gui/frontend/dist/
+ops/openstack_testing/exercises/cache/
+ops/openstack_testing/exercises/progress_state.json

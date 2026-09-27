@@ -20,9 +20,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from guardian_platform.config_store import get_config_value
 
 from mcp_servers.cmp_logs_mcp.mask import mask_text, mask_value
-from mcp_servers.shared.config_store import get_config_value
 
 _DEFAULT_TIMEOUT_SECONDS = 30
 _DEFAULT_MAX_RESULTS = 100

@@ -1,208 +1,247 @@
 {
   "get_elastic_ip": {
-    "resource_spec": {
-      "uri_template": "cmp://elastic-ip/{elastic_ip_id}",
-      "name": "elastic-ip",
-      "description": "An elastic IP's real status in core vs. what CMP's cache says."
-    }
+    "usage_note": "An elastic IP's real status in core vs. what CMP's cache says. Check this when a floating-IP-related symptom (unreachable, association mismatch) might be explained by CMP's cached state drifting from the real core value.",
+    "risk_level": null,
+    "tool_category": "read"
   },
   "get_private_ip": {
-    "resource_spec": {
-      "uri_template": "cmp://private-ip/{private_ip_id}",
-      "name": "private-ip",
-      "description": "A private IP/port's real status in core vs. what CMP's cache says."
-    }
+    "usage_note": "A private IP/port's real status in core vs. what CMP's cache says -- same drift-check use as get_elastic_ip, for a private IP/port instead of an elastic IP.",
+    "risk_level": null,
+    "tool_category": "read"
   },
   "update_elastic_ip": {
     "usage_note": "The description field is CMP-only; allowed VIPs/CIDRs sync to core. Only the fields that sync to core can drift -- description changes never touch core at all.",
     "risk_level": "low",
-    "tool_category": "action"
+    "tool_category": "action",
+    "hidden": true
   },
   "update_private_ip": {
     "usage_note": "The description field is CMP-only; allowed VIPs/CIDRs sync to core. Only the fields that sync to core can drift -- description changes never touch core at all.",
     "risk_level": "low",
-    "tool_category": "action"
+    "tool_category": "action",
+    "hidden": true
   },
   "create_floating_ip": {
     "usage_note": "Returns in 'creating' status immediately -- the real allocation runs asynchronously through a FloatingIPCreatedEvent that settles the status once IaaS answers. Don't treat the initial response as final; the resource's real state isn't known until that event resolves.",
     "risk_level": "medium",
-    "tool_category": "action"
+    "tool_category": "action",
+    "hidden": true
   },
   "delete_route_table": {
     "usage_note": "Blocked for default or in-use route tables -- expect a validation error rather than a silent no-op if called on one of those.",
     "risk_level": "medium",
-    "tool_category": "action"
+    "tool_category": "action",
+    "hidden": true
   },
   "accept_vpc_peering": {
     "usage_note": "Accepts a pending VPC peering, which starts carrying real traffic between the two VPCs immediately. Confirm this is the intended peering before accepting -- reversing it means a separate delete_vpc_peering call.",
     "risk_level": "medium",
-    "tool_category": "action"
+    "tool_category": "action",
+    "hidden": true
   },
   "attach_direct_connect_subnets": {
     "usage_note": "Attaches private subnets to an existing Direct Connect, extending its reachable network range.",
     "risk_level": "medium",
-    "tool_category": "config"
+    "tool_category": "config",
+    "hidden": true
   },
   "create_direct_connect": {
     "usage_note": "Provisions a new Direct Connect (dedicated network link). A capacity/provisioning action, not typically reversible without a corresponding delete_direct_connect.",
     "risk_level": "medium",
-    "tool_category": "action"
+    "tool_category": "action",
+    "hidden": true
   },
   "create_elastic_ip": {
     "usage_note": "Allocates a new elastic IP from the region pool. Companion to create_floating_ip -- check which resource type the incident/customer actually needs before choosing between them.",
     "risk_level": "medium",
-    "tool_category": "action"
+    "tool_category": "action",
+    "hidden": true
   },
   "create_private_ip": {
     "usage_note": "Allocates a new private IP.",
     "risk_level": "medium",
-    "tool_category": "action"
+    "tool_category": "action",
+    "hidden": true
   },
   "create_route_table": {
     "usage_note": "Creates a new route table and syncs it to core immediately -- unlike some network updates here, this one is not CMP-only.",
     "risk_level": "medium",
-    "tool_category": "config"
+    "tool_category": "config",
+    "hidden": true
   },
   "create_rt_route": {
     "usage_note": "Adds a route to a route table and pushes it to the core router immediately -- a routing change takes effect right away, not just in CMP's records.",
     "risk_level": "medium",
-    "tool_category": "config"
+    "tool_category": "config",
+    "hidden": true
   },
   "create_vpc_peering": {
     "usage_note": "Creates a VPC peering request between two zone-less, non-overlapping VPCs. Starts pending -- no traffic flows until accept_vpc_peering is called on it.",
     "risk_level": "medium",
     "tool_category": "action",
-    "related_tools": ["accept_vpc_peering", "reject_vpc_peering"]
+    "related_tools": [
+      "accept_vpc_peering",
+      "reject_vpc_peering"
+    ],
+    "hidden": true
   },
   "delete_direct_connect": {
     "usage_note": "Removes a Direct Connect entirely. Breaks connectivity for anything relying on it -- confirm nothing is still using it first.",
     "risk_level": "high",
-    "tool_category": "action"
+    "tool_category": "action",
+    "hidden": true
   },
   "delete_elastic_ip": {
     "usage_note": "Releases the elastic IP back to the region pool. Irreversible for this specific IP address -- a server relying on it loses that address permanently, not just temporarily.",
     "risk_level": "high",
-    "tool_category": "action"
+    "tool_category": "action",
+    "hidden": true
   },
   "delete_floating_ip": {
     "usage_note": "Releases the floating IP back to the region pool. Same irreversibility as delete_elastic_ip -- confirm nothing is still using it.",
     "risk_level": "high",
-    "tool_category": "action"
+    "tool_category": "action",
+    "hidden": true
   },
   "delete_private_ip": {
     "usage_note": "Deletes a private IP. Per the spec, blocked while still attached to a server -- expect a validation error rather than a silent detach-and-delete.",
     "risk_level": "medium",
-    "tool_category": "action"
+    "tool_category": "action",
+    "hidden": true
   },
   "delete_rt_route": {
     "usage_note": "Removes a route from a route table and from the core router immediately -- traffic relying on that route stops working right away.",
     "risk_level": "medium",
-    "tool_category": "config"
+    "tool_category": "config",
+    "hidden": true
   },
   "delete_vpc_peering": {
     "usage_note": "Deletes a VPC peering and every route-table route that used it as a nexthop. Broader blast radius than just the peering itself -- check list_rt_routes for routes depending on it first.",
     "risk_level": "medium",
     "tool_category": "action",
-    "related_tools": ["list_rt_routes"]
+    "related_tools": [
+      "list_rt_routes"
+    ],
+    "hidden": true
   },
   "detach_direct_connect_subnets": {
     "usage_note": "Detaches private subnets from a Direct Connect, narrowing its reachable network range. Anything in the detached subnets loses connectivity through this Direct Connect.",
     "risk_level": "medium",
-    "tool_category": "config"
+    "tool_category": "config",
+    "hidden": true
   },
   "elastic_ip_update_port_security": {
     "usage_note": "Toggles OpenStack port security (anti-spoofing + security-group enforcement) on this elastic IP's port. Setting port_security=false disables that protection -- a real security exposure, not a routine config change. Setting it back to true (the default) re-enables it.",
     "risk_level": "high",
-    "tool_category": "action"
+    "tool_category": "action",
+    "hidden": true
   },
   "get_direct_connect": {
     "usage_note": "Detail for one Direct Connect.",
     "risk_level": null,
-    "tool_category": "read"
+    "tool_category": "read",
+    "hidden": true
   },
   "get_floating_ip": {
     "usage_note": "Check a floating IP's real status in core against what CMP's cache says -- same drift-checking role as get_elastic_ip for elastic IPs.",
     "risk_level": "low",
-    "tool_category": "read"
+    "tool_category": "read",
+    "hidden": true
   },
   "get_route_table": {
     "usage_note": "Detail for one route table.",
     "risk_level": null,
-    "tool_category": "read"
+    "tool_category": "read",
+    "hidden": true
   },
   "get_rt_route": {
     "usage_note": "Detail for one route table route.",
     "risk_level": null,
-    "tool_category": "read"
+    "tool_category": "read",
+    "hidden": true
   },
   "get_vpc_peering": {
     "usage_note": "Detail and status for one VPC peering (pending/active/rejected).",
     "risk_level": null,
-    "tool_category": "read"
+    "tool_category": "read",
+    "hidden": true
   },
   "list_direct_connects": {
     "usage_note": "All Direct Connects.",
     "risk_level": null,
-    "tool_category": "read"
+    "tool_category": "read",
+    "hidden": true
   },
   "list_elastic_ips": {
     "usage_note": "All elastic IPs.",
     "risk_level": null,
-    "tool_category": "read"
+    "tool_category": "read",
+    "hidden": true
   },
   "list_floating_ips": {
     "usage_note": "All floating IPs.",
     "risk_level": null,
-    "tool_category": "read"
+    "tool_category": "read",
+    "hidden": true
   },
   "list_private_ips": {
     "usage_note": "All private IPs.",
     "risk_level": null,
-    "tool_category": "read"
+    "tool_category": "read",
+    "hidden": true
   },
   "list_route_tables": {
     "usage_note": "All route tables.",
     "risk_level": null,
-    "tool_category": "read"
+    "tool_category": "read",
+    "hidden": true
   },
   "list_rt_routes": {
     "usage_note": "All route table routes -- check here before deleting a VPC peering or route table to see what still depends on it.",
     "risk_level": null,
-    "tool_category": "read"
+    "tool_category": "read",
+    "hidden": true
   },
   "list_vpc_peerings": {
     "usage_note": "All VPC peerings.",
     "risk_level": null,
-    "tool_category": "read"
+    "tool_category": "read",
+    "hidden": true
   },
   "private_ip_update_port_security": {
     "usage_note": "Toggles OpenStack port security (anti-spoofing + security-group enforcement) on this private IP's port. Setting port_security=false disables that protection -- a real security exposure, not a routine config change. Setting it back to true (the default) re-enables it.",
     "risk_level": "high",
-    "tool_category": "action"
+    "tool_category": "action",
+    "hidden": true
   },
   "reject_vpc_peering": {
     "usage_note": "Rejects a pending VPC peering. Terminal per the spec -- it cannot be accepted after being rejected, a new create_vpc_peering would be needed instead.",
     "risk_level": "low",
-    "tool_category": "action"
+    "tool_category": "action",
+    "hidden": true
   },
   "update_direct_connect": {
     "usage_note": "Updates a Direct Connect's own configuration.",
     "risk_level": "medium",
-    "tool_category": "config"
+    "tool_category": "config",
+    "hidden": true
   },
   "update_floating_ip": {
     "usage_note": "Updates the floating IP's description only -- DB-only, no core call, per the spec. Cannot drift from core since core is never involved.",
     "risk_level": "low",
-    "tool_category": "config"
+    "tool_category": "config",
+    "hidden": true
   },
   "update_route_table": {
     "usage_note": "Core is only called when internet_access changes (per the spec) -- other field updates are CMP-only and can't drift from core.",
     "risk_level": "medium",
-    "tool_category": "config"
+    "tool_category": "config",
+    "hidden": true
   },
   "update_vpc_peering": {
     "usage_note": "Updates the VPC peering's description only -- CMP-only, no core call per the spec.",
     "risk_level": "low",
-    "tool_category": "config"
+    "tool_category": "config",
+    "hidden": true
   }
 }
